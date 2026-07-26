@@ -39,6 +39,7 @@ object TimerManager {
 
     private const val PREFS = "timer_prefs"
     private const val ALARM_REQUEST_CODE = 1001
+    private const val SHOW_ALARM_REQUEST_CODE = 1002
 
     private const val KEY_PHASE = "phase"
     private const val KEY_STATUS = "status"
@@ -178,10 +179,24 @@ object TimerManager {
         context.stopService(Intent(context, AlarmRingService::class.java))
     }
 
+    /**
+     * setAlarmClock (rather than setExactAndAllowWhileIdle) marks this as a user-facing
+     * alarm: it shows the system alarm icon, is exempt from Doze deferral, and puts the
+     * app on a temporary background allowlist when it fires.
+     */
     @SuppressLint("MissingPermission")
     private fun scheduleAlarm(context: Context, triggerAtMillis: Long) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, alarmPendingIntent(context))
+        val info = AlarmManager.AlarmClockInfo(triggerAtMillis, showAlarmPendingIntent(context))
+        am.setAlarmClock(info, alarmPendingIntent(context))
+    }
+
+    private fun showAlarmPendingIntent(context: Context): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java)
+        return PendingIntent.getActivity(
+            context, SHOW_ALARM_REQUEST_CODE, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     private fun cancelAlarm(context: Context) {

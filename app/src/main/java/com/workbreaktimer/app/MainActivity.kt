@@ -2,6 +2,7 @@ package com.workbreaktimer.app
 
 import android.Manifest
 import android.app.AlarmManager
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -17,11 +18,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -40,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -53,6 +57,15 @@ class MainActivity : ComponentActivity() {
     private val notifPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    /**
+     * Whether the alarm may launch AlarmActivity over the lock screen. Since Android 14
+     * USE_FULL_SCREEN_INTENT is revoked by default unless the installer recognised the app
+     * as a clock/calling app, and without it setFullScreenIntent() silently degrades to an
+     * ordinary heads-up notification — the screen never turns on.
+     */
+    private val fullScreenIntentAllowed = mutableStateOf(true)
+    private val exactAlarmAllowed = mutableStateOf(true)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         TimerManager.init(this)
@@ -65,7 +78,10 @@ class MainActivity : ComponentActivity() {
                     NavHost(navController = navController, startDestination = "timer") {
                         composable("timer") {
                             TimerScreen(
-                                onRequestExactAlarmPermission = { requestExactAlarmPermissionIfNeeded() },
+                                fullScreenIntentAllowed = fullScreenIntentAllowed.value,
+                                exactAlarmAllowed = exactAlarmAllowed.value,
+                                onGrantFullScreenIntent = { openFullScreenIntentSettings() },
+                                onGrantExactAlarm = { openExactAlarmSettings() },
                                 onOpenSettings = { navController.navigate("settings") }
                             )
                         }
@@ -78,6 +94,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshPermissionState()
+    }
+
+    private fun refreshPermissionState() {
+        fullScreenIntentAllowed.value =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+            } else true
+        exactAlarmAllowed.value =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+            } else true
+    }
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
@@ -86,18 +118,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestExactAlarmPermissionIfNeeded() {
+    private fun openFullScreenIntentSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                    Uri.parse("package:$packageName")
+                )
+            )
+        }
+    }
+
+    private fun openExactAlarmSettings() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val am = getSystemService(AlarmManager::class.java)
-            if (!am.canScheduleExactAlarms()) {
-                startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
-            }
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName"))
+            )
         }
     }
 }
 
 @Composable
-fun TimerScreen(onRequestExactAlarmPermission: () -> Unit, onOpenSettings: () -> Unit) {
+fun TimerScreen(
+    fullScreenIntentAllowed: Boolean,
+    exactAlarmAllowed: Boolean,
+    onGrantFullScreenIntent: () -> Unit,
+    onGrantExactAlarm: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
     val state by TimerManager.state.collectAsState()
     val context = LocalContext.current
 
@@ -115,8 +163,6 @@ fun TimerScreen(onRequestExactAlarmPermission: () -> Unit, onOpenSettings: () ->
         state.remainingMillis
     }
 
-    LaunchedEffect(Unit) { onRequestExactAlarmPermission() }
-
     Box(modifier = Modifier.fillMaxSize()) {
         TextButton(
             onClick = onOpenSettings,
@@ -132,6 +178,39 @@ fun TimerScreen(onRequestExactAlarmPermission: () -> Unit, onOpenSettings: () ->
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
+            if (!fullScreenIntentAllowed || !exactAlarmAllowed) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "Будильник не сможет включить экран",
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        if (!fullScreenIntentAllowed) {
+                            Text(
+                                "Разрешите приложению показывать экран будильника поверх " +
+                                    "блокировки, иначе вместо него придёт обычное уведомление.",
+                                textAlign = TextAlign.Center
+                            )
+                            Button(onClick = onGrantFullScreenIntent) {
+                                Text("Разрешить")
+                            }
+                        }
+                        if (!exactAlarmAllowed) {
+                            Text("Нужно разрешение на точные будильники.", textAlign = TextAlign.Center)
+                            Button(onClick = onGrantExactAlarm) {
+                                Text("Разрешить точные будильники")
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+
             Text(
                 text = if (state.phase == TimerPhase.WORK) "Рабочий таймер" else "Перерыв",
                 fontSize = 22.sp,

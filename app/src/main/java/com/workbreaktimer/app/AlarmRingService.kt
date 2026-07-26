@@ -12,6 +12,7 @@ import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -27,11 +28,14 @@ class AlarmRingService : Service() {
 
     private var mediaPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
         const val CHANNEL_ID = "alarm_channel"
         const val NOTIFICATION_ID = 42
         const val ACTION_STOP = "com.workbreaktimer.app.action.STOP_RING"
+        const val ACTION_ADVANCE = "com.workbreaktimer.app.action.ADVANCE_PHASE"
+        private const val WAKE_LOCK_TIMEOUT_MILLIS = 5 * 60 * 1000L
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -41,9 +45,51 @@ class AlarmRingService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Lets the user advance straight from the lock-screen notification, which works
+        // even when the full-screen intent was downgraded to an ordinary notification.
+        if (intent?.action == ACTION_ADVANCE) {
+            TimerManager.init(this)
+            TimerManager.advancePhaseAndStart(this)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        acquireScreenWakeLock()
         startForeground(NOTIFICATION_ID, buildNotification())
+        launchAlarmActivityIfFullScreenIntentBlocked()
         startRinging()
         return START_STICKY
+    }
+
+    private fun alarmActivityIntent() = Intent(this, AlarmActivity::class.java).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    }
+
+    /**
+     * Without USE_FULL_SCREEN_INTENT (revoked by default since Android 14) the notification's
+     * full-screen intent is downgraded to a heads-up banner and never opens AlarmActivity.
+     * setAlarmClock puts us on a temporary background allowlist when it fires, so a direct
+     * start may still succeed; if the platform blocks it the wake lock at least lights up the
+     * screen so the notification is visible.
+     */
+    private fun launchAlarmActivityIfFullScreenIntentBlocked() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        val nm = getSystemService(NotificationManager::class.java)
+        if (nm.canUseFullScreenIntent()) return
+        try {
+            startActivity(alarmActivityIntent())
+        } catch (e: Exception) {
+            // Background activity launch blocked; the notification remains the fallback.
+        }
+    }
+
+    private fun acquireScreenWakeLock() {
+        if (wakeLock != null) return
+        val pm = getSystemService(PowerManager::class.java)
+        @Suppress("DEPRECATION")
+        wakeLock = pm.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+            "WorkBreakTimer::alarm"
+        ).apply { acquire(WAKE_LOCK_TIMEOUT_MILLIS) }
     }
 
     private fun buildNotification(): Notification {
@@ -52,11 +98,8 @@ class AlarmRingService : Service() {
         val title = if (state.phase == TimerPhase.BREAK) "Перерыв окончен" else "Работа окончена"
         val text = if (state.phase == TimerPhase.BREAK) "Пора снова поработать" else "Пора сделать перерыв"
 
-        val fullScreenIntent = Intent(this, AlarmActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
         val fullScreenPendingIntent = PendingIntent.getActivity(
-            this, 0, fullScreenIntent,
+            this, 0, alarmActivityIntent(),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -65,6 +108,17 @@ class AlarmRingService : Service() {
             this, 0, stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+
+        val advanceIntent = Intent(this, AlarmRingService::class.java).apply { action = ACTION_ADVANCE }
+        val advancePendingIntent = PendingIntent.getService(
+            this, 1, advanceIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val advanceLabel = if (state.phase == TimerPhase.BREAK) {
+            "Начать работу (${state.workDurationMillis / 60000} мин)"
+        } else {
+            "Начать перерыв (${state.breakDurationMillis / 60000} мин)"
+        }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
@@ -76,6 +130,8 @@ class AlarmRingService : Service() {
             .setContentIntent(fullScreenPendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .addAction(0, advanceLabel, advancePendingIntent)
             .addAction(0, "Остановить", stopPendingIntent)
             .build()
     }
@@ -132,6 +188,8 @@ class AlarmRingService : Service() {
         }
         mediaPlayer = null
         vibrator?.cancel()
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
         super.onDestroy()
     }
 }
