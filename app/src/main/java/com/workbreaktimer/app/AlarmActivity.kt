@@ -1,6 +1,5 @@
 package com.workbreaktimer.app
 
-import android.app.KeyguardManager
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -49,7 +48,7 @@ class AlarmActivity : ComponentActivity() {
                         Text(title, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                         Spacer(Modifier.height(48.dp))
                         val buttonLabel = if (finishedPhase == TimerPhase.WORK) {
-                            "Начать перерыв (5 мин)"
+                            "Начать перерыв (${state.breakDurationMillis / 60000} мин)"
                         } else {
                             "Начать работу (${state.workDurationMillis / 60000} мин)"
                         }
@@ -72,6 +71,11 @@ class AlarmActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Shows this activity directly on top of the lock screen, without dismissing it —
+     * requestDismissKeyguard()/FLAG_DISMISS_KEYGUARD would instead prompt the user to
+     * enter their PIN/pattern, which defeats "control the alarm without unlocking".
+     */
     private fun setupWakeScreen() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
@@ -80,12 +84,9 @@ class AlarmActivity : ComponentActivity() {
             @Suppress("DEPRECATION")
             window.addFlags(
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                    WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
             )
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val km = getSystemService(KeyguardManager::class.java)
-        km?.requestDismissKeyguard(this, null)
     }
 }
