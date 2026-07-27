@@ -6,13 +6,22 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 
 /**
@@ -45,6 +54,13 @@ class StepTrackingService : Service(), SensorEventListener {
         const val ACTION_IDLE_DEADLINE = "com.workbreaktimer.app.action.IDLE_DEADLINE"
         const val ACTION_DISABLE_AUTO_START = "com.workbreaktimer.app.action.DISABLE_AUTO_START"
         private const val DEADLINE_REQUEST_CODE = 2001
+        private const val CHIME_MILLIS = 2500L
+
+        /**
+         * Held statically because auto-starting the timer immediately stops this service —
+         * a player owned by the instance would be released mid-chime.
+         */
+        private var chimePlayer: MediaPlayer? = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -133,7 +149,57 @@ class StepTrackingService : Service(), SensorEventListener {
         }
         cancelDeadlineAlarm()
         notifyAutoStarted()
+        playAutoStartChime()
         TimerManager.autoStartWork(this)
+    }
+
+    /**
+     * A short burst on the alarm stream rather than a notification sound: the phone is face
+     * down or in a pocket when this fires, and USAGE_ALARM is audible on the alarm volume
+     * even in silent mode. Cut off after a couple of seconds — alarm tones run for minutes,
+     * and this is an announcement, not an alarm to be dismissed.
+     */
+    private fun playAutoStartChime() {
+        releaseChime()
+        val uri = RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+        val player = MediaPlayer()
+        chimePlayer = player
+        player.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+        )
+        player.setOnCompletionListener { releaseChime() }
+        try {
+            player.setDataSource(applicationContext, uri)
+            player.prepare()
+            player.start()
+            Handler(Looper.getMainLooper()).postDelayed({ releaseChime() }, CHIME_MILLIS)
+        } catch (e: Exception) {
+            // Playback can fail on some devices; the vibration below still announces the start.
+            releaseChime()
+        }
+        vibrateOnce()
+    }
+
+    private fun releaseChime() {
+        chimePlayer?.let { player ->
+            try { player.stop() } catch (_: Exception) {}
+            player.release()
+        }
+        chimePlayer = null
+    }
+
+    private fun vibrateOnce() {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            getSystemService(VibratorManager::class.java).defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        }
+        vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 300, 150, 300), -1))
     }
 
     private fun armDeadlineAlarm() {
@@ -189,7 +255,8 @@ class StepTrackingService : Service(), SensorEventListener {
             AUTOSTART_CHANNEL_ID,
             "Автозапуск таймера",
             "Сообщение о том, что таймер работы запустился сам",
-            NotificationManager.IMPORTANCE_DEFAULT
+            NotificationManager.IMPORTANCE_DEFAULT,
+            silent = true
         )
         val minutes = TimerManager.state.value.workDurationMillis / 60000
         val notification = NotificationCompat.Builder(this, AUTOSTART_CHANNEL_ID)
@@ -209,12 +276,26 @@ class StepTrackingService : Service(), SensorEventListener {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
-    private fun createChannel(id: String, name: String, description: String, importance: Int) {
+    private fun createChannel(
+        id: String,
+        name: String,
+        description: String,
+        importance: Int,
+        silent: Boolean = false
+    ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(id) != null) return
         nm.createNotificationChannel(
-            NotificationChannel(id, name, importance).also { it.description = description }
+            NotificationChannel(id, name, importance).also {
+                it.description = description
+                if (silent) {
+                    // The chime is played by hand on the alarm stream; letting the channel
+                    // ring as well would double up.
+                    it.setSound(null, null)
+                    it.enableVibration(false)
+                }
+            }
         )
     }
 
