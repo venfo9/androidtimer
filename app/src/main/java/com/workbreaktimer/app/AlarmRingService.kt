@@ -42,6 +42,8 @@ class AlarmRingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            TimerManager.init(this)
+            TimerManager.stopRingingOnly(this)
             stopSelf()
             return START_NOT_STICKY
         }

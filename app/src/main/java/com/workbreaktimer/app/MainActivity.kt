@@ -22,13 +22,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,6 +61,14 @@ class MainActivity : ComponentActivity() {
     private val notifPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    private val activityRecognitionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            activityRecognitionGranted.value = granted
+            // The permission is only ever requested because the user asked for auto-start, and
+            // granting it is what unblocks the health foreground service.
+            if (granted) TimerManager.setAutoStartEnabled(this, true)
+        }
+
     /**
      * Whether the alarm may launch AlarmActivity over the lock screen. Since Android 14
      * USE_FULL_SCREEN_INTENT is revoked by default unless the installer recognised the app
@@ -65,6 +77,7 @@ class MainActivity : ComponentActivity() {
      */
     private val fullScreenIntentAllowed = mutableStateOf(true)
     private val exactAlarmAllowed = mutableStateOf(true)
+    private val activityRecognitionGranted = mutableStateOf(true)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,7 +99,11 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("settings") {
-                            SettingsScreen(onBack = { navController.popBackStack() })
+                            SettingsScreen(
+                                activityRecognitionGranted = activityRecognitionGranted.value,
+                                onRequestActivityRecognition = { requestActivityRecognition() },
+                                onBack = { navController.popBackStack() }
+                            )
                         }
                     }
                 }
@@ -108,6 +125,14 @@ class MainActivity : ComponentActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
             } else true
+        activityRecognitionGranted.value = TimerManager.hasActivityRecognitionPermission(this)
+        TimerManager.syncStepTracking(this)
+    }
+
+    private fun requestActivityRecognition() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            activityRecognitionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -247,10 +272,7 @@ fun TimerScreen(
                         "Начать работу (${state.workDurationMillis / 60000} мин)"
                     }
                     Row {
-                        Button(onClick = {
-                            TimerManager.stopRingingOnly(context)
-                            TimerManager.advancePhaseAndStart(context)
-                        }) {
+                        Button(onClick = { TimerManager.advancePhaseAndStart(context) }) {
                             Text(label, fontSize = 18.sp)
                         }
                         Spacer(Modifier.width(16.dp))
@@ -265,7 +287,11 @@ fun TimerScreen(
 }
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(
+    activityRecognitionGranted: Boolean,
+    onRequestActivityRecognition: () -> Unit,
+    onBack: () -> Unit
+) {
     val state by TimerManager.state.collectAsState()
     val context = LocalContext.current
 
@@ -275,10 +301,14 @@ fun SettingsScreen(onBack: () -> Unit) {
     var breakMinutes by remember(state.breakDurationMillis) {
         mutableStateOf((state.breakDurationMillis / 60000).toString())
     }
+    var idleMinutes by remember(state.idleThresholdMillis) {
+        mutableStateOf((state.idleThresholdMillis / 60000).toString())
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -307,6 +337,57 @@ fun SettingsScreen(onBack: () -> Unit) {
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
         )
+
+        Spacer(Modifier.height(32.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        Text("Автозапуск по педометру", fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Если телефон не зафиксировал ни одного шага заданное время, считаем что " +
+                "начался сидячий режим, и запускаем таймер работы сами.",
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(16.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Включить автозапуск")
+            Spacer(Modifier.width(16.dp))
+            Switch(
+                checked = state.autoStartEnabled,
+                onCheckedChange = { enabled ->
+                    if (enabled && !activityRecognitionGranted) {
+                        onRequestActivityRecognition()
+                    } else {
+                        TimerManager.setAutoStartEnabled(context, enabled)
+                    }
+                }
+            )
+        }
+
+        if (state.autoStartEnabled && !activityRecognitionGranted) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Нужен доступ к данным о физической активности, иначе шаги не читаются.",
+                textAlign = TextAlign.Center
+            )
+            Button(onClick = onRequestActivityRecognition) { Text("Выдать доступ") }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = idleMinutes,
+            onValueChange = { value ->
+                idleMinutes = value.filter { it.isDigit() }
+                idleMinutes.toIntOrNull()?.let { TimerManager.setIdleMinutes(context, it) }
+            },
+            label = { Text("Минуты покоя до автозапуска") },
+            singleLine = true,
+            enabled = state.autoStartEnabled,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+
         Spacer(Modifier.height(32.dp))
         Button(onClick = onBack) { Text("Назад") }
     }
