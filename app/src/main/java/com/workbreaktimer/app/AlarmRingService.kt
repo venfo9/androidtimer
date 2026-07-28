@@ -35,6 +35,7 @@ class AlarmRingService : Service() {
         const val NOTIFICATION_ID = 42
         const val ACTION_STOP = "com.workbreaktimer.app.action.STOP_RING"
         const val ACTION_ADVANCE = "com.workbreaktimer.app.action.ADVANCE_PHASE"
+        const val ACTION_SNOOZE = "com.workbreaktimer.app.action.SNOOZE"
         private const val WAKE_LOCK_TIMEOUT_MILLIS = 5 * 60 * 1000L
     }
 
@@ -52,6 +53,12 @@ class AlarmRingService : Service() {
         if (intent?.action == ACTION_ADVANCE) {
             TimerManager.init(this)
             TimerManager.advancePhaseAndStart(this)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_SNOOZE) {
+            TimerManager.init(this)
+            TimerManager.snooze(this)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -117,9 +124,20 @@ class AlarmRingService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val advanceLabel = if (state.phase == TimerPhase.BREAK) {
-            "Начать работу (${state.workDurationMillis / 60000} мин)"
+            "Начать работу (${formatDurationShort(state.settings.workMillis)})"
         } else {
-            "Начать перерыв (${state.breakDurationMillis / 60000} мин)"
+            "Начать перерыв (${formatDurationShort(state.settings.breakMillis)})"
+        }
+
+        val snoozeIntent = Intent(this, AlarmRingService::class.java).apply { action = ACTION_SNOOZE }
+        val snoozePendingIntent = PendingIntent.getService(
+            this, 2, snoozeIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val snoozeLabel = if (state.phase == TimerPhase.BREAK) {
+            "Ещё отдохнуть (${formatDurationShort(state.settings.snoozeMillis)})"
+        } else {
+            "Ещё поработать (${formatDurationShort(state.settings.snoozeMillis)})"
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -134,6 +152,7 @@ class AlarmRingService : Service() {
             .setAutoCancel(false)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(0, advanceLabel, advancePendingIntent)
+            .addAction(0, snoozeLabel, snoozePendingIntent)
             .addAction(0, "Остановить", stopPendingIntent)
             .build()
     }

@@ -55,6 +55,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
@@ -71,8 +74,8 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Whether the alarm may launch AlarmActivity over the lock screen. Since Android 14
-     * USE_FULL_SCREEN_INTENT is revoked by default unless the installer recognised the app
-     * as a clock/calling app, and without it setFullScreenIntent() silently degrades to an
+     * USE_FULL_SCREEN_INTENT is revoked by default unless the installer recognised the app as
+     * a clock or calling app, and without it setFullScreenIntent() silently degrades to an
      * ordinary heads-up notification — the screen never turns on.
      */
     private val fullScreenIntentAllowed = mutableStateOf(true)
@@ -95,7 +98,8 @@ class MainActivity : ComponentActivity() {
                                 exactAlarmAllowed = exactAlarmAllowed.value,
                                 onGrantFullScreenIntent = { openFullScreenIntentSettings() },
                                 onGrantExactAlarm = { openExactAlarmSettings() },
-                                onOpenSettings = { navController.navigate("settings") }
+                                onOpenSettings = { navController.navigate("settings") },
+                                onOpenHistory = { navController.navigate("history") }
                             )
                         }
                         composable("settings") {
@@ -104,6 +108,9 @@ class MainActivity : ComponentActivity() {
                                 onRequestActivityRecognition = { requestActivityRecognition() },
                                 onBack = { navController.popBackStack() }
                             )
+                        }
+                        composable("history") {
+                            HistoryScreen(onBack = { navController.popBackStack() })
                         }
                     }
                 }
@@ -129,17 +136,19 @@ class MainActivity : ComponentActivity() {
         TimerManager.syncStepTracking(this)
     }
 
-    private fun requestActivityRecognition() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            activityRecognitionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
-        }
-    }
-
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
                 PackageManager.PERMISSION_GRANTED
             if (!granted) notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun requestActivityRecognition() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            activityRecognitionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        } else {
+            TimerManager.setAutoStartEnabled(this, true)
         }
     }
 
@@ -169,7 +178,8 @@ fun TimerScreen(
     exactAlarmAllowed: Boolean,
     onGrantFullScreenIntent: () -> Unit,
     onGrantExactAlarm: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenHistory: () -> Unit
 ) {
     val state by TimerManager.state.collectAsState()
     val context = LocalContext.current
@@ -189,11 +199,9 @@ fun TimerScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        TextButton(
-            onClick = onOpenSettings,
-            modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
-        ) {
-            Text("Настройки")
+        Row(modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
+            TextButton(onClick = onOpenHistory) { Text("История") }
+            TextButton(onClick = onOpenSettings) { Text("Настройки") }
         }
 
         Column(
@@ -221,15 +229,11 @@ fun TimerScreen(
                                     "блокировки, иначе вместо него придёт обычное уведомление.",
                                 textAlign = TextAlign.Center
                             )
-                            Button(onClick = onGrantFullScreenIntent) {
-                                Text("Разрешить")
-                            }
+                            Button(onClick = onGrantFullScreenIntent) { Text("Разрешить") }
                         }
                         if (!exactAlarmAllowed) {
                             Text("Нужно разрешение на точные будильники.", textAlign = TextAlign.Center)
-                            Button(onClick = onGrantExactAlarm) {
-                                Text("Разрешить точные будильники")
-                            }
+                            Button(onClick = onGrantExactAlarm) { Text("Разрешить точные будильники") }
                         }
                     }
                 }
@@ -242,7 +246,7 @@ fun TimerScreen(
                 fontWeight = FontWeight.Medium
             )
             Spacer(Modifier.height(16.dp))
-            Text(text = formatTime(remainingMillis), fontSize = 64.sp, fontWeight = FontWeight.Bold)
+            Text(text = formatClock(remainingMillis), fontSize = 64.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(32.dp))
 
             when (state.status) {
@@ -266,22 +270,72 @@ fun TimerScreen(
                     }
                 }
                 TimerStatus.FINISHED -> {
-                    val label = if (state.phase == TimerPhase.WORK) {
-                        "Начать перерыв (${state.breakDurationMillis / 60000} мин)"
+                    val advanceLabel = if (state.phase == TimerPhase.WORK) {
+                        "Начать перерыв (${formatDurationShort(state.settings.breakMillis)})"
                     } else {
-                        "Начать работу (${state.workDurationMillis / 60000} мин)"
+                        "Начать работу (${formatDurationShort(state.settings.workMillis)})"
                     }
-                    Row {
-                        Button(onClick = { TimerManager.advancePhaseAndStart(context) }) {
-                            Text(label, fontSize = 18.sp)
-                        }
-                        Spacer(Modifier.width(16.dp))
-                        OutlinedButton(onClick = { TimerManager.reset(context) }) {
-                            Text("Сброс")
-                        }
+                    val snoozeLabel = if (state.phase == TimerPhase.WORK) {
+                        "Ещё поработать (${formatDurationShort(state.settings.snoozeMillis)})"
+                    } else {
+                        "Ещё отдохнуть (${formatDurationShort(state.settings.snoozeMillis)})"
                     }
+                    Button(onClick = { TimerManager.advancePhaseAndStart(context) }) {
+                        Text(advanceLabel, fontSize = 18.sp)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(onClick = { TimerManager.snooze(context) }) { Text(snoozeLabel) }
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = { TimerManager.reset(context) }) { Text("Сброс") }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Minutes and seconds as two fields rather than one free-form string: it keeps the numeric
+ * keypad usable and removes any parsing of "1:30" style input.
+ */
+@Composable
+private fun DurationField(
+    label: String,
+    millis: Long,
+    enabled: Boolean = true,
+    onChange: (Long) -> Unit
+) {
+    // Seeded once and then owned by the fields: keying this on `millis` would feed each
+    // keystroke back through the store and clobber the other field mid-edit.
+    var minutes by remember { mutableStateOf((millis / 60_000).toString()) }
+    var seconds by remember { mutableStateOf((millis / 1000 % 60).toString()) }
+
+    fun push() {
+        onChange(TimerSettings.toMillis(minutes.toIntOrNull() ?: 0, seconds.toIntOrNull() ?: 0))
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(label, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = minutes,
+                onValueChange = { minutes = it.filter { c -> c.isDigit() }.take(3); push() },
+                label = { Text("мин") },
+                singleLine = true,
+                enabled = enabled,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(12.dp))
+            OutlinedTextField(
+                value = seconds,
+                onValueChange = { seconds = it.filter { c -> c.isDigit() }.take(2); push() },
+                label = { Text("сек") },
+                singleLine = true,
+                enabled = enabled,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
@@ -294,59 +348,40 @@ fun SettingsScreen(
 ) {
     val state by TimerManager.state.collectAsState()
     val context = LocalContext.current
-
-    var workMinutes by remember(state.workDurationMillis) {
-        mutableStateOf((state.workDurationMillis / 60000).toString())
-    }
-    var breakMinutes by remember(state.breakDurationMillis) {
-        mutableStateOf((state.breakDurationMillis / 60000).toString())
-    }
-    var idleMinutes by remember(state.idleThresholdMillis) {
-        mutableStateOf((state.idleThresholdMillis / 60000).toString())
-    }
+    val settings = state.settings
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text("Настройки", fontSize = 22.sp, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(24.dp))
 
-        OutlinedTextField(
-            value = workMinutes,
-            onValueChange = { value ->
-                workMinutes = value.filter { it.isDigit() }
-                workMinutes.toIntOrNull()?.let { TimerManager.setWorkMinutes(context, it) }
-            },
-            label = { Text("Минуты работы") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
+        DurationField("Работа", settings.workMillis) { millis ->
+            TimerManager.updateSettings(context) { it.copy(workMillis = millis) }
+        }
         Spacer(Modifier.height(16.dp))
-        OutlinedTextField(
-            value = breakMinutes,
-            onValueChange = { value ->
-                breakMinutes = value.filter { it.isDigit() }
-                breakMinutes.toIntOrNull()?.let { TimerManager.setBreakMinutes(context, it) }
-            },
-            label = { Text("Минуты перерыва") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
+        DurationField("Перерыв", settings.breakMillis) { millis ->
+            TimerManager.updateSettings(context) { it.copy(breakMillis = millis) }
+        }
+        Spacer(Modifier.height(16.dp))
+        DurationField("Снуз (отложить будильник)", settings.snoozeMillis) { millis ->
+            TimerManager.updateSettings(context) { it.copy(snoozeMillis = millis) }
+        }
 
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(24.dp))
         HorizontalDivider()
         Spacer(Modifier.height(16.dp))
 
         Text("Автозапуск по педометру", fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Если телефон не зафиксировал ни одного шага заданное время, считаем что " +
-                "начался сидячий режим, и запускаем таймер работы сами.",
+            "Если телефон не зафиксировал ни одного шага заданное время, считаем что начался " +
+                "сидячий режим. Перед стартом приложение спросит подтверждение — 30 секунд, " +
+                "чтобы отменить.",
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(16.dp))
@@ -355,7 +390,7 @@ fun SettingsScreen(
             Text("Включить автозапуск")
             Spacer(Modifier.width(16.dp))
             Switch(
-                checked = state.autoStartEnabled,
+                checked = settings.autoStartEnabled,
                 onCheckedChange = { enabled ->
                     if (enabled && !activityRecognitionGranted) {
                         onRequestActivityRecognition()
@@ -366,7 +401,7 @@ fun SettingsScreen(
             )
         }
 
-        if (state.autoStartEnabled && !activityRecognitionGranted) {
+        if (settings.autoStartEnabled && !activityRecognitionGranted) {
             Spacer(Modifier.height(8.dp))
             Text(
                 "Нужен доступ к данным о физической активности, иначе шаги не читаются.",
@@ -376,26 +411,85 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(16.dp))
-        OutlinedTextField(
-            value = idleMinutes,
-            onValueChange = { value ->
-                idleMinutes = value.filter { it.isDigit() }
-                idleMinutes.toIntOrNull()?.let { TimerManager.setIdleMinutes(context, it) }
-            },
-            label = { Text("Минуты покоя до автозапуска") },
-            singleLine = true,
-            enabled = state.autoStartEnabled,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
+        // Editable whether or not auto-start is on, so the threshold can be dialled in first.
+        DurationField("Покой до автозапуска", settings.idleThresholdMillis) { millis ->
+            TimerManager.updateSettings(context) { it.copy(idleThresholdMillis = millis) }
+        }
 
         Spacer(Modifier.height(32.dp))
         Button(onClick = onBack) { Text("Назад") }
     }
 }
 
-private fun formatTime(millis: Long): String {
-    val totalSeconds = millis / 1000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return "%02d:%02d".format(minutes, seconds)
+@Composable
+fun HistoryScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val repository = remember { TimerManager.history(context) }
+    // Read once per visit: nothing writes history while this screen is on top.
+    val stats = remember { repository.stats() }
+    val sessions = remember { repository.recent(50) }
+    val timeFormat = remember { SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("История", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(24.dp))
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                StatRow("Сегодня работа", formatDurationLong(stats.todayWorkMillis))
+                StatRow("Сегодня сессий", stats.todayWorkSessions.toString())
+                StatRow("Сегодня перерывы", formatDurationLong(stats.todayBreakMillis))
+                StatRow("За 7 дней", formatDurationLong(stats.weekWorkMillis))
+                StatRow("Дней подряд", stats.streakDays.toString())
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        if (sessions.isEmpty()) {
+            Text(
+                "Пока пусто. Завершите первую сессию, и она появится здесь.",
+                textAlign = TextAlign.Center
+            )
+        } else {
+            for (session in sessions) {
+                Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            if (session.phase == TimerPhase.WORK) "Работа" else "Перерыв",
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(formatDurationLong(session.actualMillis))
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    val marks = buildList {
+                        add(timeFormat.format(Date(session.startedAtMillis)))
+                        if (session.autoStarted) add("автозапуск")
+                        if (session.snoozedMillis > 0) add("снуз ${formatDurationShort(session.snoozedMillis)}")
+                        if (!session.completed) add("прервано")
+                    }
+                    Text(marks.joinToString(" · "), fontSize = 13.sp)
+                }
+                HorizontalDivider()
+            }
+        }
+
+        Spacer(Modifier.height(32.dp))
+        Button(onClick = onBack) { Text("Назад") }
+    }
+}
+
+@Composable
+private fun StatRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text(label, modifier = Modifier.weight(1f))
+        Text(value, fontWeight = FontWeight.Medium)
+    }
 }

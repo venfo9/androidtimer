@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -48,15 +49,27 @@ class AlarmActivity : ComponentActivity() {
                         Text(title, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                         Spacer(Modifier.height(48.dp))
                         val buttonLabel = if (finishedPhase == TimerPhase.WORK) {
-                            "Начать перерыв (${state.breakDurationMillis / 60000} мин)"
+                            "Начать перерыв (${formatDurationShort(state.settings.breakMillis)})"
                         } else {
-                            "Начать работу (${state.workDurationMillis / 60000} мин)"
+                            "Начать работу (${formatDurationShort(state.settings.workMillis)})"
                         }
                         Button(onClick = {
                             TimerManager.advancePhaseAndStart(this@AlarmActivity)
                             finish()
                         }) {
                             Text(buttonLabel, fontSize = 20.sp)
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        val snoozeLabel = if (finishedPhase == TimerPhase.WORK) {
+                            "Ещё поработать (${formatDurationShort(state.settings.snoozeMillis)})"
+                        } else {
+                            "Ещё отдохнуть (${formatDurationShort(state.settings.snoozeMillis)})"
+                        }
+                        OutlinedButton(onClick = {
+                            TimerManager.snooze(this@AlarmActivity)
+                            finish()
+                        }) {
+                            Text(snoozeLabel, fontSize = 18.sp)
                         }
                         Spacer(Modifier.height(16.dp))
                         TextButton(onClick = {
