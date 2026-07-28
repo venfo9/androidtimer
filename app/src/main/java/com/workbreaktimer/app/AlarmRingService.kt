@@ -155,6 +155,7 @@ class AlarmRingService : Service() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(0, "Отложить (${formatDurationShort(snoozeMillis)})", servicePendingIntent(ACTION_SNOOZE, 2))
             .addAction(0, "Выполнено", servicePendingIntent(ACTION_STOP, 0))
+            .withAccentColor(this)
             .build()
     }
 
@@ -218,6 +219,7 @@ class AlarmRingService : Service() {
             .addAction(0, advanceLabel, advancePendingIntent)
             .addAction(0, snoozeLabel, snoozePendingIntent)
             .addAction(0, "Остановить", stopPendingIntent)
+            .withAccentColor(this)
             .build()
     }
 

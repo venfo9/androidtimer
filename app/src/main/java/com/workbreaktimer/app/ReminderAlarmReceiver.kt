@@ -76,6 +76,7 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setAutoCancel(true)
                 .setContentIntent(open)
+                .withAccentColor(context)
                 .build()
         )
     }

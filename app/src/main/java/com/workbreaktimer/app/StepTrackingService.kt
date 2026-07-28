@@ -175,6 +175,7 @@ class StepTrackingService : Service(), SensorEventListener {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(openAppPendingIntent())
             .addAction(0, "Отключить автозапуск", servicePendingIntent(ACTION_DISABLE_AUTO_START, 0))
+            .withAccentColor(this)
             .build()
     }
 
@@ -192,6 +193,7 @@ class StepTrackingService : Service(), SensorEventListener {
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(openAppPendingIntent())
+            .withAccentColor(this)
             .build()
     }
 

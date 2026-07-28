@@ -333,12 +333,20 @@ fun TimerScreen(
                         Spacer(Modifier.width(16.dp))
                         OutlinedButton(onClick = { TimerManager.reset(context) }) { Text("Сброс") }
                     }
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = { TimerManager.finishEarly(context) }) {
+                        Text(finishEarlyLabel(state.phase))
+                    }
                 }
                 TimerStatus.PAUSED -> {
                     Row {
                         Button(onClick = { TimerManager.resume(context) }) { Text("Продолжить") }
                         Spacer(Modifier.width(16.dp))
                         OutlinedButton(onClick = { TimerManager.reset(context) }) { Text("Сброс") }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = { TimerManager.finishEarly(context) }) {
+                        Text(finishEarlyLabel(state.phase))
                     }
                 }
                 TimerStatus.FINISHED -> {
@@ -364,6 +372,9 @@ fun TimerScreen(
         }
     }
 }
+
+private fun finishEarlyLabel(phase: TimerPhase): String =
+    if (phase == TimerPhase.WORK) "Завершить работу и начать перерыв" else "Завершить перерыв и начать работу"
 
 /**
  * Minutes and seconds as two fields rather than one free-form string: it keeps the numeric

@@ -57,6 +57,7 @@ object TimerManager {
     private const val PREFS = "timer_prefs"
     private const val ALARM_REQUEST_CODE = 1001
     private const val SHOW_ALARM_REQUEST_CODE = 1002
+    private const val MIN_COUNTABLE_SESSION_MILLIS = 60_000L
 
     private const val KEY_PHASE = "phase"
     private const val KEY_STATUS = "status"
@@ -176,9 +177,34 @@ object TimerManager {
         beginPhase(context, next, autoStarted = false)
     }
 
-    private fun beginPhase(context: Context, phase: TimerPhase, autoStarted: Boolean) {
+    /**
+     * Ends the current phase before its alarm fires and moves straight into the other phase —
+     * unlike reset, which always returns to an idle work phase instead of continuing the
+     * cycle. Only valid while RUNNING or PAUSED; after the alarm already fired this is exactly
+     * what advancePhaseAndStart does.
+     *
+     * The ended phase is recorded with the time that actually passed, floored to zero under a
+     * minute: a few seconds of "work" before changing your mind is not a session worth
+     * counting, and would otherwise pollute the history with near-zero entries.
+     */
+    fun finishEarly(context: Context) {
+        val current = _state.value
+        if (current.status != TimerStatus.RUNNING && current.status != TimerStatus.PAUSED) return
+        val next = if (current.phase == TimerPhase.WORK) TimerPhase.BREAK else TimerPhase.WORK
+        beginPhase(context, next, autoStarted = false, floorShortSession = true)
+    }
+
+    private fun beginPhase(
+        context: Context,
+        phase: TimerPhase,
+        autoStarted: Boolean,
+        floorShortSession: Boolean = false
+    ) {
         context.stopService(Intent(context, AlarmRingService::class.java))
-        closeOpenSession(completed = _state.value.status == TimerStatus.FINISHED)
+        closeOpenSession(
+            completed = _state.value.status == TimerStatus.FINISHED,
+            flooredToZeroUnderMinute = floorShortSession
+        )
         update(context) { s ->
             val total = if (phase == TimerPhase.WORK) s.settings.workMillis else s.settings.breakMillis
             val end = System.currentTimeMillis() + total
@@ -270,16 +296,25 @@ object TimerManager {
         sessionSnoozedMillis = 0L
     }
 
-    private fun closeOpenSession(completed: Boolean) {
+    private fun closeOpenSession(completed: Boolean, flooredToZeroUnderMinute: Boolean = false) {
         val startedAt = sessionStartedAt
         if (startedAt == 0L) return
         val current = _state.value
         sessionStartedAt = 0L
+        val now = System.currentTimeMillis()
+        // actualMillis is derived as endedAt - startedAt, so flooring it to zero means
+        // recording the end at the start instant rather than storing a separate field.
+        val elapsed = (now - startedAt).coerceAtLeast(0)
+        val endedAt = if (flooredToZeroUnderMinute && elapsed < MIN_COUNTABLE_SESSION_MILLIS) {
+            startedAt
+        } else {
+            now
+        }
         history?.append(
             SessionRecord(
                 phase = current.phase,
                 startedAtMillis = startedAt,
-                endedAtMillis = System.currentTimeMillis(),
+                endedAtMillis = endedAt,
                 plannedMillis = current.phaseDurationMillis,
                 completed = completed,
                 autoStarted = sessionAutoStarted,
