@@ -141,10 +141,24 @@ object ReminderManager {
         commit(context, current.copy(reminders = current.reminders.filterNot { it.id == reminder.id }))
     }
 
+    /** Toggles the done checkbox — a marker for the current occurrence, independent of enabled. */
+    fun setCompleted(context: Context, reminderId: String, completed: Boolean) {
+        init(context)
+        val current = _state.value
+        val reminder = current.reminder(reminderId) ?: return
+        val updated = reminder.copy(completed = completed)
+        commit(
+            context,
+            current.copy(reminders = current.reminders.map { if (it.id == updated.id) updated else it })
+        )
+    }
+
     /**
      * Called once a reminder has rung. Repeating reminders roll forward to their next
      * occurrence; one-shot reminders switch themselves off but stay in the list so the user
-     * can see what fired and reuse it.
+     * can see what fired and reuse it. Either way this is a fresh occurrence, so any earlier
+     * "done" mark is cleared — the alarm firing again is what makes it fresh, not the "Выполнено"
+     * button, which runs later and sets it for the occurrence that just rang.
      */
     fun onFired(context: Context, reminderId: String) {
         init(context)
@@ -152,9 +166,9 @@ object ReminderManager {
         val reminder = current.reminder(reminderId) ?: return
         val next = reminder.nextOccurrence()
         val updated = if (next == null) {
-            reminder.copy(enabled = false)
+            reminder.copy(enabled = false, completed = false)
         } else {
-            reminder.copy(triggerAtMillis = next)
+            reminder.copy(triggerAtMillis = next, completed = false)
         }
         commit(
             context,

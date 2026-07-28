@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
@@ -43,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
@@ -172,12 +174,22 @@ fun FolderScreen(folderId: String, onBack: () -> Unit, onEditReminder: (String?)
         for (reminder in items) {
             Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Marks the occurrence that just fired as done — separate from the Switch,
+                    // which controls whether the alarm keeps firing at all.
+                    Checkbox(
+                        checked = reminder.completed,
+                        onCheckedChange = { ReminderManager.setCompleted(context, reminder.id, it) }
+                    )
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .clickable { onEditReminder(reminder.id) }
                     ) {
-                        Text(reminder.title, fontWeight = FontWeight.Medium)
+                        Text(
+                            reminder.title,
+                            fontWeight = FontWeight.Medium,
+                            textDecoration = if (reminder.completed) TextDecoration.LineThrough else null
+                        )
                         Spacer(Modifier.height(2.dp))
                         val date = Date(reminder.triggerAtMillis)
                         Text(

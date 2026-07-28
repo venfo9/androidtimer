@@ -62,7 +62,13 @@ class AlarmRingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             TimerManager.init(this)
-            if (reminderId == null) TimerManager.stopRingingOnly(this)
+            val ringingReminder = reminderId
+            if (ringingReminder != null) {
+                ReminderManager.init(this)
+                ReminderManager.setCompleted(this, ringingReminder, true)
+            } else {
+                TimerManager.stopRingingOnly(this)
+            }
             stopSelf()
             return START_NOT_STICKY
         }

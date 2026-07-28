@@ -60,6 +60,7 @@ class AlarmActivity : ComponentActivity() {
                             )
                             Spacer(Modifier.height(48.dp))
                             Button(onClick = {
+                                ReminderManager.setCompleted(this@AlarmActivity, reminderId, true)
                                 stopService(Intent(this@AlarmActivity, AlarmRingService::class.java))
                                 finish()
                             }) {

@@ -32,6 +32,12 @@ data class Reminder(
     val intervalMillis: Long = DEFAULT_INTERVAL_MILLIS,
     val enabled: Boolean = true,
     /**
+     * Whether the current occurrence has been marked done. Tracks only the occurrence that
+     * last fired, not the reminder permanently — [nextOccurrence] resets it so a repeating
+     * reminder starts each new day/week/etc. unchecked again.
+     */
+    val completed: Boolean = false,
+    /**
      * Stable per-reminder PendingIntent request code. Assigned once at creation rather than
      * derived from the id, so two reminders can never collide onto the same alarm slot.
      */
@@ -144,6 +150,7 @@ class FileReminderStore(context: Context) : ReminderStore {
                             .put(F_REPEAT, reminder.repeat.name)
                             .put(F_INTERVAL, reminder.intervalMillis)
                             .put(F_ENABLED, reminder.enabled)
+                            .put(F_COMPLETED, reminder.completed)
                             .put(F_REQUEST_CODE, reminder.requestCode)
                     )
                 }
@@ -193,6 +200,7 @@ class FileReminderStore(context: Context) : ReminderStore {
                             .getOrDefault(RepeatRule.ONCE),
                         intervalMillis = item.optLong(F_INTERVAL, Reminder.DEFAULT_INTERVAL_MILLIS),
                         enabled = item.optBoolean(F_ENABLED, true),
+                        completed = item.optBoolean(F_COMPLETED, false),
                         requestCode = item.optInt(F_REQUEST_CODE, BASE_REQUEST_CODE + i + 1)
                     )
                 )
@@ -222,6 +230,7 @@ class FileReminderStore(context: Context) : ReminderStore {
         const val F_REPEAT = "repeat"
         const val F_INTERVAL = "interval"
         const val F_ENABLED = "enabled"
+        const val F_COMPLETED = "completed"
         const val F_REQUEST_CODE = "request_code"
     }
 }
