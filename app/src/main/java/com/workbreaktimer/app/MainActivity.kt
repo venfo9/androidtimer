@@ -12,20 +12,26 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -47,6 +53,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -503,6 +510,12 @@ fun SettingsScreen(
     }
 }
 
+private enum class ChartRange(val label: String) {
+    DAY("День"), SEVEN_DAYS("7 дней"), WEEKS("Недели"), MONTHS("Месяцы")
+}
+
+private const val DAY_MILLIS = 24 * 60 * 60 * 1000L
+
 @Composable
 fun HistoryScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -511,6 +524,19 @@ fun HistoryScreen(onBack: () -> Unit) {
     val stats = remember { repository.stats() }
     val sessions = remember { repository.recent(50) }
     val timeFormat = remember { SimpleDateFormat("d MMM, HH:mm", Locale.getDefault()) }
+
+    var chartRange by remember { mutableStateOf(ChartRange.SEVEN_DAYS) }
+    var dayOffset by remember { mutableStateOf(0) }
+    val dayLabelFormat = remember { SimpleDateFormat("d MMMM", Locale("ru")) }
+
+    val buckets = remember(chartRange, dayOffset) {
+        when (chartRange) {
+            ChartRange.DAY -> repository.hourlyBuckets(System.currentTimeMillis() - dayOffset * DAY_MILLIS)
+            ChartRange.SEVEN_DAYS -> repository.dailyBuckets(7)
+            ChartRange.WEEKS -> repository.weeklyBuckets(8)
+            ChartRange.MONTHS -> repository.monthlyBuckets(6)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -533,6 +559,75 @@ fun HistoryScreen(onBack: () -> Unit) {
         }
 
         Spacer(Modifier.height(24.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            for (range in ChartRange.values()) {
+                val selected = range == chartRange
+                OutlinedButton(
+                    onClick = {
+                        chartRange = range
+                        if (range != ChartRange.DAY) dayOffset = 0
+                    },
+                    modifier = Modifier.weight(1f),
+                    border = if (selected) {
+                        BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                    } else {
+                        ButtonDefaults.outlinedButtonBorder
+                    }
+                ) {
+                    Text(range.label, fontSize = 13.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+
+        if (chartRange == ChartRange.DAY) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = { dayOffset++ }) { Text("← Раньше") }
+                Text(
+                    if (dayOffset == 0) "Сегодня" else {
+                        dayLabelFormat.format(Date(System.currentTimeMillis() - dayOffset * DAY_MILLIS))
+                    },
+                    fontWeight = FontWeight.Medium
+                )
+                TextButton(onClick = { if (dayOffset > 0) dayOffset-- }, enabled = dayOffset > 0) {
+                    Text("Позже →")
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+
+        val totalWork = buckets.sumOf { it.workMillis }
+        val totalBreak = buckets.sumOf { it.breakMillis }
+        Text(
+            "Работа: ${formatDurationLong(totalWork)} · Перерыв: ${formatDurationLong(totalBreak)}",
+            fontSize = 13.sp
+        )
+        Spacer(Modifier.height(12.dp))
+
+        WorkBreakBarChart(buckets)
+
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ChartLegendSwatch(WORK_BAR_COLOR)
+            Spacer(Modifier.width(6.dp))
+            Text("Работа", fontSize = 13.sp)
+            Spacer(Modifier.width(16.dp))
+            ChartLegendSwatch(BREAK_BAR_COLOR)
+            Spacer(Modifier.width(6.dp))
+            Text("Перерыв", fontSize = 13.sp)
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
 
         if (sessions.isEmpty()) {
             Text(
@@ -573,5 +668,70 @@ private fun StatRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(label, modifier = Modifier.weight(1f))
         Text(value, fontWeight = FontWeight.Medium)
+    }
+}
+
+private val WORK_BAR_COLOR = Color(0xFF3B82F6)
+private val BREAK_BAR_COLOR = Color(0xFF10B981)
+private val CHART_BAR_HEIGHT = 140.dp
+
+@Composable
+private fun ChartLegendSwatch(color: Color) {
+    Box(
+        modifier = Modifier
+            .width(12.dp)
+            .height(12.dp)
+            .background(color, shape = RoundedCornerShape(2.dp))
+    )
+}
+
+/**
+ * Two bars per bucket (work, break) scaled to the largest value on screen, in a horizontally
+ * scrolling row — 24 hourly or 12 monthly buckets do not need to be squeezed to fit a phone
+ * width when they can simply be scrolled instead.
+ */
+@Composable
+private fun WorkBreakBarChart(buckets: List<ChartBucket>) {
+    val maxMillis = (buckets.maxOfOrNull { maxOf(it.workMillis, it.breakMillis) } ?: 0L)
+        .coerceAtLeast(60 * 60_000L)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        for (bucket in buckets) {
+            Column(
+                modifier = Modifier.width(36.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(
+                    modifier = Modifier.height(CHART_BAR_HEIGHT),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(13.dp)
+                            .fillMaxHeight(
+                                (bucket.workMillis.toFloat() / maxMillis).coerceIn(0f, 1f)
+                            )
+                            .background(WORK_BAR_COLOR, shape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
+                    )
+                    Box(
+                        modifier = Modifier
+                            .width(13.dp)
+                            .fillMaxHeight(
+                                (bucket.breakMillis.toFloat() / maxMillis).coerceIn(0f, 1f)
+                            )
+                            .background(BREAK_BAR_COLOR, shape = RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(bucket.label, fontSize = 10.sp, maxLines = 1)
+            }
+            Spacer(Modifier.width(10.dp))
+        }
     }
 }

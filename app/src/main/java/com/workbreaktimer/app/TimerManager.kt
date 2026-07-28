@@ -85,6 +85,10 @@ object TimerManager {
         settingsStore = SettingsStore(context)
         history = FileSessionHistoryRepository(context)
         _state.value = readState(context)
+        // Restores the countdown notification after a process restart while a phase was
+        // still running or paused — the alarm itself keeps time regardless, but the shade
+        // would otherwise stay empty until the next state change.
+        TimerCountdownNotifier.sync(context, _state.value)
     }
 
     fun history(context: Context): SessionHistoryRepository {
@@ -135,6 +139,7 @@ object TimerManager {
         _state.value = newState
         persist(newState, context)
         reconcileStepTracking(context, newState)
+        TimerCountdownNotifier.sync(context, newState)
     }
 
     // endregion

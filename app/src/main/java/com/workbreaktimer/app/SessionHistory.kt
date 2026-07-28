@@ -4,7 +4,10 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 /** One finished work or break session, appended when the phase leaves RUNNING. */
 data class SessionRecord(
@@ -29,6 +32,13 @@ data class HistoryStats(
     val streakDays: Int = 0
 )
 
+/** One column of the history bar chart: totals for a single hour, day, week or month. */
+data class ChartBucket(
+    val label: String,
+    val workMillis: Long,
+    val breakMillis: Long
+)
+
 /**
  * Storage for finished sessions. Behind an interface so the file implementation can be
  * swapped for a database without the screens noticing.
@@ -38,6 +48,18 @@ interface SessionHistoryRepository {
     fun recent(limit: Int): List<SessionRecord>
     fun stats(nowMillis: Long = System.currentTimeMillis()): HistoryStats
     fun clear()
+
+    /** 24 buckets, one per hour, for the calendar day containing [dayMillis]. */
+    fun hourlyBuckets(dayMillis: Long): List<ChartBucket>
+
+    /** One bucket per calendar day, the oldest first, ending on the day containing [endMillis]. */
+    fun dailyBuckets(days: Int, endMillis: Long = System.currentTimeMillis()): List<ChartBucket>
+
+    /** One bucket per calendar week, the oldest first, ending on the current week. */
+    fun weeklyBuckets(weeks: Int): List<ChartBucket>
+
+    /** One bucket per calendar month, the oldest first, ending on the current month. */
+    fun monthlyBuckets(months: Int): List<ChartBucket>
 }
 
 /**
@@ -123,6 +145,86 @@ class FileSessionHistoryRepository(context: Context) : SessionHistoryRepository 
             day -= DAY_MILLIS
         }
         return streak
+    }
+
+    override fun hourlyBuckets(dayMillis: Long): List<ChartBucket> = synchronized(lock) {
+        val dayStart = startOfDay(dayMillis)
+        val dayEnd = dayStart + DAY_MILLIS
+        val work = LongArray(24)
+        val brk = LongArray(24)
+        val calendar = Calendar.getInstance()
+        for (record in readAll()) {
+            if (record.endedAtMillis < dayStart || record.endedAtMillis >= dayEnd) continue
+            calendar.timeInMillis = record.endedAtMillis
+            val hour = calendar.get(Calendar.HOUR_OF_DAY)
+            if (record.phase == TimerPhase.WORK) work[hour] += record.actualMillis else brk[hour] += record.actualMillis
+        }
+        (0 until 24).map { h -> ChartBucket(h.toString(), work[h], brk[h]) }
+    }
+
+    override fun dailyBuckets(days: Int, endMillis: Long): List<ChartBucket> = synchronized(lock) {
+        val records = readAll()
+        val endDayStart = startOfDay(endMillis)
+        val weekdayFormat = SimpleDateFormat("EEE", Locale("ru"))
+        (days - 1 downTo 0).map { i ->
+            val bucketStart = endDayStart - i * DAY_MILLIS
+            val bucketEnd = bucketStart + DAY_MILLIS
+            var work = 0L
+            var brk = 0L
+            for (record in records) {
+                if (record.endedAtMillis < bucketStart || record.endedAtMillis >= bucketEnd) continue
+                if (record.phase == TimerPhase.WORK) work += record.actualMillis else brk += record.actualMillis
+            }
+            val label = weekdayFormat.format(Date(bucketStart)).replaceFirstChar { it.uppercase() }
+            ChartBucket(label, work, brk)
+        }
+    }
+
+    override fun weeklyBuckets(weeks: Int): List<ChartBucket> = synchronized(lock) {
+        val records = readAll()
+        val calendar = Calendar.getInstance()
+        calendar.timeInMillis = startOfDay(System.currentTimeMillis())
+        // Roll back to this week's first day, whatever the locale considers that to be.
+        while (calendar.get(Calendar.DAY_OF_WEEK) != calendar.firstDayOfWeek) {
+            calendar.add(Calendar.DAY_OF_YEAR, -1)
+        }
+        val currentWeekStart = calendar.timeInMillis
+        val labelFormat = SimpleDateFormat("d.MM", Locale.getDefault())
+        (weeks - 1 downTo 0).map { i ->
+            val bucketStart = currentWeekStart - i * 7 * DAY_MILLIS
+            val bucketEnd = bucketStart + 7 * DAY_MILLIS
+            var work = 0L
+            var brk = 0L
+            for (record in records) {
+                if (record.endedAtMillis < bucketStart || record.endedAtMillis >= bucketEnd) continue
+                if (record.phase == TimerPhase.WORK) work += record.actualMillis else brk += record.actualMillis
+            }
+            ChartBucket(labelFormat.format(Date(bucketStart)), work, brk)
+        }
+    }
+
+    override fun monthlyBuckets(months: Int): List<ChartBucket> = synchronized(lock) {
+        val records = readAll()
+        val labelFormat = SimpleDateFormat("LLL", Locale("ru"))
+        val base = Calendar.getInstance()
+        base.timeInMillis = startOfDay(System.currentTimeMillis())
+        base.set(Calendar.DAY_OF_MONTH, 1)
+        (months - 1 downTo 0).map { i ->
+            val bucketStartCal = base.clone() as Calendar
+            bucketStartCal.add(Calendar.MONTH, -i)
+            val bucketStart = bucketStartCal.timeInMillis
+            val bucketEndCal = bucketStartCal.clone() as Calendar
+            bucketEndCal.add(Calendar.MONTH, 1)
+            val bucketEnd = bucketEndCal.timeInMillis
+            var work = 0L
+            var brk = 0L
+            for (record in records) {
+                if (record.endedAtMillis < bucketStart || record.endedAtMillis >= bucketEnd) continue
+                if (record.phase == TimerPhase.WORK) work += record.actualMillis else brk += record.actualMillis
+            }
+            val label = labelFormat.format(Date(bucketStart)).replaceFirstChar { it.uppercase() }
+            ChartBucket(label, work, brk)
+        }
     }
 
     private fun startOfDay(millis: Long): Long {
