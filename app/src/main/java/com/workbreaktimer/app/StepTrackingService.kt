@@ -38,9 +38,7 @@ class StepTrackingService : Service(), SensorEventListener {
 
     companion object {
         const val CHANNEL_ID = "step_tracking_channel"
-        const val AUTOSTART_CHANNEL_ID = "autostart_channel"
         const val NOTIFICATION_ID = 43
-        const val AUTOSTART_NOTIFICATION_ID = 44
 
         const val ACTION_IDLE_DEADLINE = "com.workbreaktimer.app.action.IDLE_DEADLINE"
         const val ACTION_DISABLE_AUTO_START = "com.workbreaktimer.app.action.DISABLE_AUTO_START"

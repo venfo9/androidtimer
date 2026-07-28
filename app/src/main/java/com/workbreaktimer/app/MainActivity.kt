@@ -507,6 +507,13 @@ fun SettingsScreen(
 
         Spacer(Modifier.height(32.dp))
         Button(onClick = onBack) { Text("Назад") }
+
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "Версия ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

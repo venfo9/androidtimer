@@ -11,8 +11,9 @@ android {
         applicationId = "com.workbreaktimer.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // versionCode = major * 100 + minor, so the next release is just "bump the last digits".
+        versionCode = 110
+        versionName = "1.10"
     }
 
     buildTypes {
@@ -33,6 +34,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
