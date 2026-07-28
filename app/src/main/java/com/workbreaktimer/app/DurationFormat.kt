@@ -18,10 +18,14 @@ fun formatDurationShort(millis: Long): String {
     }
 }
 
-/** Accumulated time in history, where hours matter and seconds do not. */
+/** Accumulated time and repeat intervals, where hours matter and seconds do not. */
 fun formatDurationLong(millis: Long): String {
     val totalMinutes = millis.coerceAtLeast(0) / 60_000
     val hours = totalMinutes / 60
     val minutes = totalMinutes % 60
-    return if (hours > 0) "$hours ч $minutes мин" else "$minutes мин"
+    return when {
+        hours > 0 && minutes > 0 -> "$hours ч $minutes мин"
+        hours > 0 -> "$hours ч"
+        else -> "$minutes мин"
+    }
 }

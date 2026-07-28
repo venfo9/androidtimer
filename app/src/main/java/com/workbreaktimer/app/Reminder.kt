@@ -6,11 +6,12 @@ import org.json.JSONObject
 import java.io.File
 import java.util.Calendar
 
-enum class RepeatRule { ONCE, DAILY, WEEKLY, MONTHLY }
+enum class RepeatRule { ONCE, INTERVAL, DAILY, WEEKLY, MONTHLY }
 
 val RepeatRule.label: String
     get() = when (this) {
         RepeatRule.ONCE -> "Один раз"
+        RepeatRule.INTERVAL -> "Через интервал"
         RepeatRule.DAILY -> "Каждый день"
         RepeatRule.WEEKLY -> "Каждую неделю"
         RepeatRule.MONTHLY -> "Каждый месяц"
@@ -27,23 +28,56 @@ data class Reminder(
     val title: String,
     val triggerAtMillis: Long,
     val repeat: RepeatRule,
+    /** Gap between repeats when [repeat] is INTERVAL; ignored otherwise. */
+    val intervalMillis: Long = DEFAULT_INTERVAL_MILLIS,
     val enabled: Boolean = true,
     /**
      * Stable per-reminder PendingIntent request code. Assigned once at creation rather than
      * derived from the id, so two reminders can never collide onto the same alarm slot.
      */
     val requestCode: Int
-)
+) {
+    /** Spells the interval out, since "Через интервал" alone says nothing useful in a list. */
+    val repeatLabel: String
+        get() = if (repeat == RepeatRule.INTERVAL) {
+            "Каждые ${formatDurationLong(intervalMillis)}"
+        } else {
+            repeat.label
+        }
+
+    companion object {
+        const val DEFAULT_INTERVAL_MILLIS = 60 * 60_000L
+
+        /**
+         * One minute floor. Anything shorter wakes the device more often than a reminder can
+         * usefully be acted on, and AlarmManager throttles it anyway.
+         */
+        const val MIN_INTERVAL_MILLIS = 60_000L
+    }
+}
 
 /**
- * Advances a trigger time past now according to the repeat rule. Returns null for one-shot
- * reminders, which have nothing left to schedule.
+ * Advances a trigger time past [afterMillis] according to the repeat rule. Returns null for
+ * one-shot reminders, which have nothing left to schedule.
  *
- * The loop matters after the phone has been off: a daily reminder missed for a week must land
- * on the next future occurrence, not fire six times catching up.
+ * This matters after the phone has been off: a reminder missed for a week must land on its
+ * next future occurrence rather than fire repeatedly catching up.
  */
 fun Reminder.nextOccurrence(afterMillis: Long = System.currentTimeMillis()): Long? {
-    if (repeat == RepeatRule.ONCE) return null
+    when (repeat) {
+        RepeatRule.ONCE -> return null
+        RepeatRule.INTERVAL -> {
+            val step = intervalMillis.coerceAtLeast(Reminder.MIN_INTERVAL_MILLIS)
+            if (triggerAtMillis > afterMillis) return triggerAtMillis
+            // Solved rather than stepped: a one-minute interval left running for a month would
+            // otherwise need tens of thousands of iterations to catch up.
+            val steps = (afterMillis - triggerAtMillis) / step + 1
+            return triggerAtMillis + steps * step
+        }
+        else -> Unit
+    }
+    // Calendar arithmetic for the day-and-longer rules, so daylight saving shifts keep the
+    // wall-clock time the user picked.
     val calendar = Calendar.getInstance()
     calendar.timeInMillis = triggerAtMillis
     var guard = 0
@@ -52,7 +86,7 @@ fun Reminder.nextOccurrence(afterMillis: Long = System.currentTimeMillis()): Lon
             RepeatRule.DAILY -> calendar.add(Calendar.DAY_OF_YEAR, 1)
             RepeatRule.WEEKLY -> calendar.add(Calendar.WEEK_OF_YEAR, 1)
             RepeatRule.MONTHLY -> calendar.add(Calendar.MONTH, 1)
-            RepeatRule.ONCE -> return null
+            else -> return null
         }
         guard++
     }
@@ -108,6 +142,7 @@ class FileReminderStore(context: Context) : ReminderStore {
                             .put(F_TITLE, reminder.title)
                             .put(F_TRIGGER, reminder.triggerAtMillis)
                             .put(F_REPEAT, reminder.repeat.name)
+                            .put(F_INTERVAL, reminder.intervalMillis)
                             .put(F_ENABLED, reminder.enabled)
                             .put(F_REQUEST_CODE, reminder.requestCode)
                     )
@@ -156,6 +191,7 @@ class FileReminderStore(context: Context) : ReminderStore {
                         triggerAtMillis = item.optLong(F_TRIGGER),
                         repeat = runCatching { RepeatRule.valueOf(item.optString(F_REPEAT)) }
                             .getOrDefault(RepeatRule.ONCE),
+                        intervalMillis = item.optLong(F_INTERVAL, Reminder.DEFAULT_INTERVAL_MILLIS),
                         enabled = item.optBoolean(F_ENABLED, true),
                         requestCode = item.optInt(F_REQUEST_CODE, BASE_REQUEST_CODE + i + 1)
                     )
@@ -184,6 +220,7 @@ class FileReminderStore(context: Context) : ReminderStore {
         const val F_TITLE = "title"
         const val F_TRIGGER = "trigger"
         const val F_REPEAT = "repeat"
+        const val F_INTERVAL = "interval"
         const val F_ENABLED = "enabled"
         const val F_REQUEST_CODE = "request_code"
     }

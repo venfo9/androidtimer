@@ -92,20 +92,24 @@ object ReminderManager {
         folderId: String,
         title: String,
         triggerAtMillis: Long,
-        repeat: RepeatRule
+        repeat: RepeatRule,
+        intervalMillis: Long = Reminder.DEFAULT_INTERVAL_MILLIS
     ) {
         init(context)
         val trimmed = title.trim().ifEmpty { "Без названия" }
+        val interval = intervalMillis.coerceAtLeast(Reminder.MIN_INTERVAL_MILLIS)
         val current = _state.value
         val existing = existingId?.let { current.reminder(it) }
         val reminder = existing?.copy(
-            title = trimmed, triggerAtMillis = triggerAtMillis, repeat = repeat, folderId = folderId
+            title = trimmed, triggerAtMillis = triggerAtMillis, repeat = repeat,
+            intervalMillis = interval, folderId = folderId
         ) ?: Reminder(
             id = UUID.randomUUID().toString(),
             folderId = folderId,
             title = trimmed,
             triggerAtMillis = triggerAtMillis,
             repeat = repeat,
+            intervalMillis = interval,
             requestCode = store!!.nextRequestCode()
         )
         val reminders = if (existing == null) {

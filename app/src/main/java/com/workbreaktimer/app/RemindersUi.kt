@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -40,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -179,7 +181,7 @@ fun FolderScreen(folderId: String, onBack: () -> Unit, onEditReminder: (String?)
                         Spacer(Modifier.height(2.dp))
                         val date = Date(reminder.triggerAtMillis)
                         Text(
-                            "${dateFormat.format(date)}, ${timeFormat.format(date)} · ${reminder.repeat.label}",
+                            "${dateFormat.format(date)}, ${timeFormat.format(date)} · ${reminder.repeatLabel}",
                             fontSize = 13.sp
                         )
                     }
@@ -225,6 +227,9 @@ fun ReminderEditorScreen(
     var title by remember { mutableStateOf(existing?.title ?: "") }
     var repeat by remember { mutableStateOf(existing?.repeat ?: RepeatRule.ONCE) }
     var triggerAt by remember { mutableStateOf(seed) }
+    val seedInterval = remember { existing?.intervalMillis ?: Reminder.DEFAULT_INTERVAL_MILLIS }
+    var intervalHours by remember { mutableStateOf((seedInterval / 3_600_000L).toString()) }
+    var intervalMinutes by remember { mutableStateOf((seedInterval / 60_000L % 60).toString()) }
 
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
@@ -283,6 +288,37 @@ fun ReminderEditorScreen(
             }
         }
 
+        if (repeat == RepeatRule.INTERVAL) {
+            Spacer(Modifier.height(16.dp))
+            Text("Интервал повтора", fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = intervalHours,
+                    onValueChange = { intervalHours = it.filter { c -> c.isDigit() }.take(3) },
+                    label = { Text("часов") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(12.dp))
+                OutlinedTextField(
+                    value = intervalMinutes,
+                    onValueChange = { intervalMinutes = it.filter { c -> c.isDigit() }.take(3) },
+                    label = { Text("минут") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Первое срабатывание — в указанные дату и время, дальше через этот интервал. " +
+                    "Минимум одна минута.",
+                fontSize = 13.sp
+            )
+        }
+
         if (triggerAt <= System.currentTimeMillis() && repeat == RepeatRule.ONCE) {
             Spacer(Modifier.height(12.dp))
             Text("Это время уже прошло — напоминание не сработает.", fontSize = 13.sp)
@@ -291,7 +327,11 @@ fun ReminderEditorScreen(
         Spacer(Modifier.height(32.dp))
         Row {
             Button(onClick = {
-                ReminderManager.saveReminder(context, reminderId, folderId, title, triggerAt, repeat)
+                val interval = (intervalHours.toLongOrNull() ?: 0L) * 3_600_000L +
+                    (intervalMinutes.toLongOrNull() ?: 0L) * 60_000L
+                ReminderManager.saveReminder(
+                    context, reminderId, folderId, title, triggerAt, repeat, interval
+                )
                 onDone()
             }) { Text("Сохранить") }
             Spacer(Modifier.width(12.dp))
