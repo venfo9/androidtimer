@@ -29,8 +29,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -51,8 +54,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -85,37 +90,95 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         TimerManager.init(this)
+        ReminderManager.init(this)
         requestNotificationPermissionIfNeeded()
 
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    val navController = rememberNavController()
-                    NavHost(navController = navController, startDestination = "timer") {
-                        composable("timer") {
-                            TimerScreen(
-                                fullScreenIntentAllowed = fullScreenIntentAllowed.value,
-                                exactAlarmAllowed = exactAlarmAllowed.value,
-                                onGrantFullScreenIntent = { openFullScreenIntentSettings() },
-                                onGrantExactAlarm = { openExactAlarmSettings() },
-                                onOpenSettings = { navController.navigate("settings") },
-                                onOpenHistory = { navController.navigate("history") }
-                            )
+                val navController = rememberNavController()
+                val backStackEntry by navController.currentBackStackEntryAsState()
+                val route = backStackEntry?.destination?.route
+                // The bar belongs to the two top-level modes only; detail screens get the
+                // whole height and their own back button.
+                val topLevel = route == ROUTE_TIMER || route == ROUTE_REMINDERS
+
+                Scaffold(
+                    bottomBar = {
+                        if (topLevel) {
+                            NavigationBar {
+                                NavigationBarItem(
+                                    selected = route == ROUTE_TIMER,
+                                    onClick = { navController.switchTab(ROUTE_TIMER) },
+                                    icon = { Text("⏱", fontSize = 18.sp) },
+                                    label = { Text("Таймер") }
+                                )
+                                NavigationBarItem(
+                                    selected = route == ROUTE_REMINDERS,
+                                    onClick = { navController.switchTab(ROUTE_REMINDERS) },
+                                    icon = { Text("🔔", fontSize = 18.sp) },
+                                    label = { Text("Напоминания") }
+                                )
+                            }
                         }
-                        composable("settings") {
-                            SettingsScreen(
-                                activityRecognitionGranted = activityRecognitionGranted.value,
-                                onRequestActivityRecognition = { requestActivityRecognition() },
-                                onBack = { navController.popBackStack() }
-                            )
-                        }
-                        composable("history") {
-                            HistoryScreen(onBack = { navController.popBackStack() })
+                    }
+                ) { padding ->
+                    Surface(modifier = Modifier.fillMaxSize().padding(padding)) {
+                        NavHost(navController = navController, startDestination = ROUTE_TIMER) {
+                            composable(ROUTE_TIMER) {
+                                TimerScreen(
+                                    fullScreenIntentAllowed = fullScreenIntentAllowed.value,
+                                    exactAlarmAllowed = exactAlarmAllowed.value,
+                                    onGrantFullScreenIntent = { openFullScreenIntentSettings() },
+                                    onGrantExactAlarm = { openExactAlarmSettings() },
+                                    onOpenSettings = { navController.navigate("settings") },
+                                    onOpenHistory = { navController.navigate("history") }
+                                )
+                            }
+                            composable("settings") {
+                                SettingsScreen(
+                                    activityRecognitionGranted = activityRecognitionGranted.value,
+                                    onRequestActivityRecognition = { requestActivityRecognition() },
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+                            composable("history") {
+                                HistoryScreen(onBack = { navController.popBackStack() })
+                            }
+                            composable(ROUTE_REMINDERS) {
+                                FoldersScreen(
+                                    onOpenFolder = { navController.navigate("folder/$it") }
+                                )
+                            }
+                            composable("folder/{folderId}") { entry ->
+                                val folderId = entry.arguments?.getString("folderId").orEmpty()
+                                FolderScreen(
+                                    folderId = folderId,
+                                    onBack = { navController.popBackStack() },
+                                    onEditReminder = { reminderId ->
+                                        navController.navigate("editor/$folderId/${reminderId ?: NEW_REMINDER}")
+                                    }
+                                )
+                            }
+                            composable("editor/{folderId}/{reminderId}") { entry ->
+                                val folderId = entry.arguments?.getString("folderId").orEmpty()
+                                val reminderId = entry.arguments?.getString("reminderId")
+                                ReminderEditorScreen(
+                                    folderId = folderId,
+                                    reminderId = reminderId.takeIf { it != NEW_REMINDER },
+                                    onDone = { navController.popBackStack() }
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    private companion object {
+        const val ROUTE_TIMER = "timer"
+        const val ROUTE_REMINDERS = "reminders"
+        const val NEW_REMINDER = "new"
     }
 
     override fun onResume() {
@@ -169,6 +232,15 @@ class MainActivity : ComponentActivity() {
                 Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName"))
             )
         }
+    }
+}
+
+/** Tab switch that keeps one entry per mode on the stack rather than piling them up. */
+private fun NavHostController.switchTab(route: String) {
+    navigate(route) {
+        popUpTo(graph.startDestinationId) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
     }
 }
 
@@ -379,9 +451,8 @@ fun SettingsScreen(
         Text("Автозапуск по педометру", fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Если телефон не зафиксировал ни одного шага заданное время, считаем что начался " +
-                "сидячий режим. Перед стартом приложение спросит подтверждение — 30 секунд, " +
-                "чтобы отменить.",
+            "Если телефон не зафиксировал ни одного шага заданное время, считаем что " +
+                "начался сидячий режим, и запускаем таймер работы сами.",
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(16.dp))

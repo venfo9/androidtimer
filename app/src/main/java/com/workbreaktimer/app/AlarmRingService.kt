@@ -30,13 +30,31 @@ class AlarmRingService : Service() {
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
+    /** Set while this service is ringing a reminder rather than the end of a timer phase. */
+    private var reminderId: String? = null
+    private var reminderTitle: String? = null
+
     companion object {
         const val CHANNEL_ID = "alarm_channel"
         const val NOTIFICATION_ID = 42
         const val ACTION_STOP = "com.workbreaktimer.app.action.STOP_RING"
         const val ACTION_ADVANCE = "com.workbreaktimer.app.action.ADVANCE_PHASE"
         const val ACTION_SNOOZE = "com.workbreaktimer.app.action.SNOOZE"
+        const val EXTRA_REMINDER_ID = "reminder_id"
+        const val EXTRA_REMINDER_TITLE = "reminder_title"
         private const val WAKE_LOCK_TIMEOUT_MILLIS = 5 * 60 * 1000L
+
+        /**
+         * Which reminder, if any, is ringing right now. AlarmActivity reads this to decide
+         * what to draw; a bound service would be heavier than this one fact deserves.
+         */
+        @Volatile
+        var ringingReminderId: String? = null
+            private set
+
+        @Volatile
+        var ringingReminderTitle: String? = null
+            private set
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -44,7 +62,7 @@ class AlarmRingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             TimerManager.init(this)
-            TimerManager.stopRingingOnly(this)
+            if (reminderId == null) TimerManager.stopRingingOnly(this)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -58,10 +76,23 @@ class AlarmRingService : Service() {
         }
         if (intent?.action == ACTION_SNOOZE) {
             TimerManager.init(this)
-            TimerManager.snooze(this)
+            val ringing = reminderId
+            if (ringing != null) {
+                ReminderManager.snooze(this, ringing)
+            } else {
+                TimerManager.snooze(this)
+            }
             stopSelf()
             return START_NOT_STICKY
         }
+
+        intent?.getStringExtra(EXTRA_REMINDER_ID)?.let { id ->
+            reminderId = id
+            reminderTitle = intent.getStringExtra(EXTRA_REMINDER_TITLE)
+            ringingReminderId = id
+            ringingReminderTitle = reminderTitle
+        }
+
         acquireScreenWakeLock()
         startForeground(NOTIFICATION_ID, buildNotification())
         launchAlarmActivityIfFullScreenIntentBlocked()
@@ -101,7 +132,40 @@ class AlarmRingService : Service() {
         ).apply { acquire(WAKE_LOCK_TIMEOUT_MILLIS) }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(): Notification =
+        if (reminderId != null) buildReminderNotification() else buildTimerNotification()
+
+    private fun buildReminderNotification(): Notification {
+        createChannel()
+        val fullScreenPendingIntent = PendingIntent.getActivity(
+            this, 0, alarmActivityIntent(),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val snoozeMillis = TimerManager.state.value.settings.snoozeMillis
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle(reminderTitle ?: "Напоминание")
+            .setContentText("Напоминание")
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setContentIntent(fullScreenPendingIntent)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .addAction(0, "Отложить (${formatDurationShort(snoozeMillis)})", servicePendingIntent(ACTION_SNOOZE, 2))
+            .addAction(0, "Выполнено", servicePendingIntent(ACTION_STOP, 0))
+            .build()
+    }
+
+    private fun servicePendingIntent(action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getService(
+            this, requestCode,
+            Intent(this, AlarmRingService::class.java).setAction(action),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    private fun buildTimerNotification(): Notification {
         createChannel()
         val state = TimerManager.state.value
         val title = if (state.phase == TimerPhase.BREAK) "Перерыв окончен" else "Работа окончена"
@@ -211,6 +275,10 @@ class AlarmRingService : Service() {
         vibrator?.cancel()
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
+        if (reminderId != null && reminderId == ringingReminderId) {
+            ringingReminderId = null
+            ringingReminderTitle = null
+        }
         super.onDestroy()
     }
 }

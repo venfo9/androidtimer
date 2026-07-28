@@ -1,5 +1,6 @@
 package com.workbreaktimer.app
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -19,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -36,6 +38,10 @@ class AlarmActivity : ComponentActivity() {
         setContent {
             val state by TimerManager.state.collectAsState()
             val finishedPhase = state.phase
+            // Captured once: the service clears these as it stops, and the screen should keep
+            // showing what it was opened for while the user is reading it.
+            val reminderId = remember { AlarmRingService.ringingReminderId }
+            val reminderTitle = remember { AlarmRingService.ringingReminderTitle }
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Column(
@@ -45,6 +51,34 @@ class AlarmActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
+                        if (reminderId != null) {
+                            Text(
+                                reminderTitle ?: "Напоминание",
+                                fontSize = 28.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(Modifier.height(48.dp))
+                            Button(onClick = {
+                                stopService(Intent(this@AlarmActivity, AlarmRingService::class.java))
+                                finish()
+                            }) {
+                                Text("Выполнено", fontSize = 20.sp)
+                            }
+                            Spacer(Modifier.height(16.dp))
+                            OutlinedButton(onClick = {
+                                ReminderManager.snooze(this@AlarmActivity, reminderId)
+                                stopService(Intent(this@AlarmActivity, AlarmRingService::class.java))
+                                finish()
+                            }) {
+                                Text(
+                                    "Отложить (${formatDurationShort(state.settings.snoozeMillis)})",
+                                    fontSize = 18.sp
+                                )
+                            }
+                            return@Column
+                        }
+
                         val title = if (finishedPhase == TimerPhase.WORK) "Время работы вышло!" else "Перерыв окончен!"
                         Text(title, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                         Spacer(Modifier.height(48.dp))

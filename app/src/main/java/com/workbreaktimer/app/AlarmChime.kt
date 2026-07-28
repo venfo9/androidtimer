@@ -28,9 +28,6 @@ object AlarmChime {
     /** Two firm pulses: the timer just took over. */
     val PATTERN_AUTO_START = longArrayOf(0, 300, 150, 300)
 
-    /** One short pulse: a question, not an announcement. */
-    val PATTERN_CONFIRM = longArrayOf(0, 200)
-
     fun play(context: Context, durationMillis: Long, vibrationPattern: LongArray) {
         playTone(context, durationMillis)
         vibrate(context, vibrationPattern)
