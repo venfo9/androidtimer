@@ -12,8 +12,23 @@ android {
         minSdk = 26
         targetSdk = 34
         // versionCode = major * 100 + minor, so the next release is just "bump the last digits".
-        versionCode = 114
-        versionName = "1.14"
+        versionCode = 116
+        versionName = "1.16"
+    }
+
+    signingConfigs {
+        // Pinned explicitly rather than left to the auto-generated debug key. That default
+        // lives in a per-machine ~/.android/debug.keystore, so CI regenerated it on every
+        // ephemeral runner and each build ended up signed by a different key — Android then
+        // refuses to install one build over another. A committed keystore makes the signature
+        // identical everywhere. Debug-only: the password is the well-known Android default and
+        // this key must never be used to publish a release.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
