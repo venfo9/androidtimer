@@ -131,7 +131,6 @@ class StepTrackingService : Service(), SensorEventListener {
             return
         }
         cancelDeadlineAlarm()
-        notify(AUTOSTART_NOTIFICATION_ID, buildStartedNotification())
         AlarmChime.play(this, START_CHIME_MILLIS, AlarmChime.PATTERN_AUTO_START)
         TimerManager.autoStartWork(this)
     }
@@ -173,24 +172,6 @@ class StepTrackingService : Service(), SensorEventListener {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(openAppPendingIntent())
             .addAction(0, "Отключить автозапуск", servicePendingIntent(ACTION_DISABLE_AUTO_START, 0))
-            .withAccentColor(this)
-            .build()
-    }
-
-    private fun buildStartedNotification(): Notification {
-        // Sound and vibration are played by hand on the alarm stream, so the channel stays mute.
-        createChannel(
-            AUTOSTART_CHANNEL_ID, "Автозапуск таймера",
-            NotificationManager.IMPORTANCE_DEFAULT, silent = true
-        )
-        val minutes = TimerManager.state.value.settings.workMillis / 60_000
-        return NotificationCompat.Builder(this, AUTOSTART_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_recent_history)
-            .setContentTitle("Таймер работы запущен автоматически")
-            .setContentText("Обнаружен сидячий режим — перерыв через $minutes мин")
-            .setAutoCancel(true)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setContentIntent(openAppPendingIntent())
             .withAccentColor(this)
             .build()
     }
