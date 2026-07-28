@@ -25,6 +25,16 @@ jobs:
         with:
           gradle-version: 8.7
 
+      # Runners are ephemeral, so without this every build gets a fresh, differently-signed
+      # debug key — Android then refuses to install an update over the previous run's APK
+      # (signature mismatch), forcing an uninstall that wipes all local app data. Caching the
+      # keystore, created on first run and reused after, keeps every build's signature stable.
+      - name: Cache debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: debug-keystore-v1
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 
