@@ -3,6 +3,15 @@ package com.workbreaktimer.app
 import android.content.Context
 import android.content.SharedPreferences
 
+/** How an alarm announces itself when it fires. */
+enum class AlarmStyle { FULL_SCREEN, SHORT_SIGNAL }
+
+val AlarmStyle.label: String
+    get() = when (this) {
+        AlarmStyle.FULL_SCREEN -> "Полный будильник"
+        AlarmStyle.SHORT_SIGNAL -> "Короткий сигнал без экрана"
+    }
+
 /**
  * Everything the user configures, kept apart from the running timer state so that adding a
  * preference never touches the phase/status machinery.
@@ -15,7 +24,9 @@ data class TimerSettings(
     val breakMillis: Long = DEFAULT_BREAK_MILLIS,
     val idleThresholdMillis: Long = DEFAULT_IDLE_MILLIS,
     val snoozeMillis: Long = DEFAULT_SNOOZE_MILLIS,
-    val autoStartEnabled: Boolean = false
+    val autoStartEnabled: Boolean = false,
+    val timerAlarmStyle: AlarmStyle = AlarmStyle.FULL_SCREEN,
+    val reminderAlarmStyle: AlarmStyle = AlarmStyle.FULL_SCREEN
 ) {
     companion object {
         const val DEFAULT_WORK_MILLIS = 30 * 60_000L
@@ -48,8 +59,14 @@ class SettingsStore(context: Context) {
         breakMillis = prefs.getLong(KEY_BREAK, TimerSettings.DEFAULT_BREAK_MILLIS),
         idleThresholdMillis = prefs.getLong(KEY_IDLE, TimerSettings.DEFAULT_IDLE_MILLIS),
         snoozeMillis = prefs.getLong(KEY_SNOOZE, TimerSettings.DEFAULT_SNOOZE_MILLIS),
-        autoStartEnabled = prefs.getBoolean(KEY_AUTO_START, false)
+        autoStartEnabled = prefs.getBoolean(KEY_AUTO_START, false),
+        timerAlarmStyle = readAlarmStyle(KEY_TIMER_ALARM_STYLE),
+        reminderAlarmStyle = readAlarmStyle(KEY_REMINDER_ALARM_STYLE)
     )
+
+    private fun readAlarmStyle(key: String): AlarmStyle =
+        runCatching { AlarmStyle.valueOf(prefs.getString(key, "")!!) }
+            .getOrDefault(AlarmStyle.FULL_SCREEN)
 
     fun write(settings: TimerSettings) {
         prefs.edit()
@@ -58,6 +75,8 @@ class SettingsStore(context: Context) {
             .putLong(KEY_IDLE, settings.idleThresholdMillis)
             .putLong(KEY_SNOOZE, settings.snoozeMillis)
             .putBoolean(KEY_AUTO_START, settings.autoStartEnabled)
+            .putString(KEY_TIMER_ALARM_STYLE, settings.timerAlarmStyle.name)
+            .putString(KEY_REMINDER_ALARM_STYLE, settings.reminderAlarmStyle.name)
             .apply()
     }
 
@@ -68,5 +87,7 @@ class SettingsStore(context: Context) {
         const val KEY_IDLE = "idle_threshold"
         const val KEY_SNOOZE = "snooze_duration"
         const val KEY_AUTO_START = "auto_start_enabled"
+        const val KEY_TIMER_ALARM_STYLE = "timer_alarm_style"
+        const val KEY_REMINDER_ALARM_STYLE = "reminder_alarm_style"
     }
 }

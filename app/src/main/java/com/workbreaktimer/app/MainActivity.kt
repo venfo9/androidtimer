@@ -33,6 +33,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -290,7 +292,11 @@ fun TimerScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            if (!fullScreenIntentAllowed || !exactAlarmAllowed) {
+            // Irrelevant once both alarm styles are set to the short signal — that style never
+            // attempts a full-screen takeover, so lacking the permission for it changes nothing.
+            val fullScreenMatters = state.settings.timerAlarmStyle == AlarmStyle.FULL_SCREEN ||
+                state.settings.reminderAlarmStyle == AlarmStyle.FULL_SCREEN
+            if ((!fullScreenIntentAllowed && fullScreenMatters) || !exactAlarmAllowed) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(
                         modifier = Modifier.padding(16.dp),
@@ -302,7 +308,7 @@ fun TimerScreen(
                             textAlign = TextAlign.Center
                         )
                         Spacer(Modifier.height(8.dp))
-                        if (!fullScreenIntentAllowed) {
+                        if (!fullScreenIntentAllowed && fullScreenMatters) {
                             Text(
                                 "Разрешите приложению показывать экран будильника поверх " +
                                     "блокировки, иначе вместо него придёт обычное уведомление.",
@@ -431,6 +437,28 @@ private fun DurationField(
 }
 
 @Composable
+private fun AlarmStyleSelector(label: String, style: AlarmStyle, onChange: (AlarmStyle) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(label, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Box {
+            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(style.label)
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                for (option in AlarmStyle.values()) {
+                    DropdownMenuItem(
+                        text = { Text(option.label) },
+                        onClick = { onChange(option); expanded = false }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun SettingsScreen(
     activityRecognitionGranted: Boolean,
     onRequestActivityRecognition: () -> Unit,
@@ -460,6 +488,26 @@ fun SettingsScreen(
         Spacer(Modifier.height(16.dp))
         DurationField("Снуз (отложить будильник)", settings.snoozeMillis) { millis ->
             TimerManager.updateSettings(context) { it.copy(snoozeMillis = millis) }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        Text("Сигнал будильника", fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "«Короткий сигнал» — короткий звук и вибрация без включения экрана и без " +
+                "полноэкранного окна поверх блокировки.",
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(16.dp))
+        AlarmStyleSelector("Таймер (конец работы/перерыва)", settings.timerAlarmStyle) { style ->
+            TimerManager.updateSettings(context) { it.copy(timerAlarmStyle = style) }
+        }
+        Spacer(Modifier.height(12.dp))
+        AlarmStyleSelector("Напоминания", settings.reminderAlarmStyle) { style ->
+            TimerManager.updateSettings(context) { it.copy(reminderAlarmStyle = style) }
         }
 
         Spacer(Modifier.height(24.dp))

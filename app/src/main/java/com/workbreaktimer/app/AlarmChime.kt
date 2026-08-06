@@ -28,6 +28,12 @@ object AlarmChime {
     /** Two firm pulses: the timer just took over. */
     val PATTERN_AUTO_START = longArrayOf(0, 300, 150, 300)
 
+    /** Two brief pulses: an alarm rang in the short-signal style, no screen wake. */
+    val PATTERN_SHORT_SIGNAL = longArrayOf(0, 250, 150, 250)
+
+    /** Duration for AlarmRingService's SHORT_SIGNAL style. */
+    const val SHORT_SIGNAL_MILLIS = 1_800L
+
     fun play(context: Context, durationMillis: Long, vibrationPattern: LongArray) {
         playTone(context, durationMillis)
         vibrate(context, vibrationPattern)

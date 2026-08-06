@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -20,7 +21,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +55,8 @@ class AlarmActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.Center
                     ) {
                         if (reminderId != null) {
+                            var showDisableConfirm by remember { mutableStateOf(false) }
+
                             Text(
                                 reminderTitle ?: "Напоминание",
                                 fontSize = 28.sp,
@@ -75,6 +80,39 @@ class AlarmActivity : ComponentActivity() {
                                 Text(
                                     "Отложить (${formatDurationShort(state.settings.snoozeMillis)})",
                                     fontSize = 18.sp
+                                )
+                            }
+                            Spacer(Modifier.height(16.dp))
+                            TextButton(onClick = { showDisableConfirm = true }) {
+                                Text("Отключить")
+                            }
+
+                            if (showDisableConfirm) {
+                                AlertDialog(
+                                    onDismissRequest = { showDisableConfirm = false },
+                                    title = { Text("Отключить повторы?") },
+                                    text = {
+                                        Text(
+                                            "Сигнал выключится, задача не будет отмечена " +
+                                                "выполненной, и это напоминание больше не " +
+                                                "сработает. Включить обратно можно в списке " +
+                                                "напоминаний."
+                                        )
+                                    },
+                                    confirmButton = {
+                                        TextButton(onClick = {
+                                            ReminderManager.setEnabled(this@AlarmActivity, reminderId, false)
+                                            stopService(Intent(this@AlarmActivity, AlarmRingService::class.java))
+                                            finish()
+                                        }) {
+                                            Text("Отключить")
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton(onClick = { showDisableConfirm = false }) {
+                                            Text("Отмена")
+                                        }
+                                    }
                                 )
                             }
                             return@Column

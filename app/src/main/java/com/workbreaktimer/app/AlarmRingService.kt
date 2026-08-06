@@ -99,11 +99,23 @@ class AlarmRingService : Service() {
             ringingReminderTitle = reminderTitle
         }
 
-        acquireScreenWakeLock()
-        startForeground(NOTIFICATION_ID, buildNotification())
-        launchAlarmActivityIfFullScreenIntentBlocked()
-        startRinging()
+        TimerManager.init(this)
+        val style = currentAlarmStyle()
+        if (style == AlarmStyle.FULL_SCREEN) {
+            acquireScreenWakeLock()
+        }
+        startForeground(NOTIFICATION_ID, buildNotification(style))
+        if (style == AlarmStyle.FULL_SCREEN) {
+            launchAlarmActivityIfFullScreenIntentBlocked()
+        }
+        startRinging(style)
         return START_STICKY
+    }
+
+    /** Timer end-of-phase and reminders are configured separately in settings. */
+    private fun currentAlarmStyle(): AlarmStyle {
+        val settings = TimerManager.state.value.settings
+        return if (reminderId != null) settings.reminderAlarmStyle else settings.timerAlarmStyle
     }
 
     private fun alarmActivityIntent() = Intent(this, AlarmActivity::class.java).apply {
@@ -138,23 +150,22 @@ class AlarmRingService : Service() {
         ).apply { acquire(WAKE_LOCK_TIMEOUT_MILLIS) }
     }
 
-    private fun buildNotification(): Notification =
-        if (reminderId != null) buildReminderNotification() else buildTimerNotification()
+    private fun buildNotification(style: AlarmStyle): Notification =
+        if (reminderId != null) buildReminderNotification(style) else buildTimerNotification(style)
 
-    private fun buildReminderNotification(): Notification {
+    private fun buildReminderNotification(style: AlarmStyle): Notification {
         createChannel()
         val fullScreenPendingIntent = PendingIntent.getActivity(
             this, 0, alarmActivityIntent(),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val snoozeMillis = TimerManager.state.value.settings.snoozeMillis
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentTitle(reminderTitle ?: "Напоминание")
             .setContentText("Напоминание")
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
             .setContentIntent(fullScreenPendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -162,7 +173,12 @@ class AlarmRingService : Service() {
             .addAction(0, "Отложить (${formatDurationShort(snoozeMillis)})", servicePendingIntent(ACTION_SNOOZE, 2))
             .addAction(0, "Выполнено", servicePendingIntent(ACTION_STOP, 0))
             .withAccentColor(this)
-            .build()
+        // The full-screen intent is what takes over the lock screen; SHORT_SIGNAL exists
+        // specifically to avoid that, so it must stay an ordinary notification.
+        if (style == AlarmStyle.FULL_SCREEN) {
+            builder.setFullScreenIntent(fullScreenPendingIntent, true)
+        }
+        return builder.build()
     }
 
     private fun servicePendingIntent(action: String, requestCode: Int): PendingIntent =
@@ -172,7 +188,7 @@ class AlarmRingService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-    private fun buildTimerNotification(): Notification {
+    private fun buildTimerNotification(style: AlarmStyle): Notification {
         createChannel()
         val state = TimerManager.state.value
         val title = if (state.phase == TimerPhase.BREAK) "Перерыв окончен" else "Работа окончена"
@@ -211,13 +227,12 @@ class AlarmRingService : Service() {
             "Ещё поработать (${formatDurationShort(state.settings.snoozeMillis)})"
         }
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title)
             .setContentText(text)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
             .setContentIntent(fullScreenPendingIntent)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -226,7 +241,10 @@ class AlarmRingService : Service() {
             .addAction(0, snoozeLabel, snoozePendingIntent)
             .addAction(0, "Остановить", stopPendingIntent)
             .withAccentColor(this)
-            .build()
+        if (style == AlarmStyle.FULL_SCREEN) {
+            builder.setFullScreenIntent(fullScreenPendingIntent, true)
+        }
+        return builder.build()
     }
 
     private fun createChannel() {
@@ -244,7 +262,13 @@ class AlarmRingService : Service() {
         }
     }
 
-    private fun startRinging() {
+    private fun startRinging(style: AlarmStyle) {
+        if (style == AlarmStyle.SHORT_SIGNAL) {
+            // A bounded chime rather than the looping alarm tone — the whole point of this
+            // style is to be brief and not demand the screen.
+            AlarmChime.play(this, AlarmChime.SHORT_SIGNAL_MILLIS, AlarmChime.PATTERN_SHORT_SIGNAL)
+            return
+        }
         val alarmUri = RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         mediaPlayer = MediaPlayer().apply {
@@ -275,6 +299,7 @@ class AlarmRingService : Service() {
     }
 
     override fun onDestroy() {
+        AlarmChime.stop()
         mediaPlayer?.let {
             try { it.stop() } catch (_: Exception) {}
             it.release()
