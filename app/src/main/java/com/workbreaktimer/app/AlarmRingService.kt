@@ -101,11 +101,11 @@ class AlarmRingService : Service() {
 
         TimerManager.init(this)
         val style = currentAlarmStyle()
-        if (style == AlarmStyle.FULL_SCREEN) {
+        if (style.wakesScreen) {
             acquireScreenWakeLock()
         }
         startForeground(NOTIFICATION_ID, buildNotification(style))
-        if (style == AlarmStyle.FULL_SCREEN) {
+        if (style.wakesScreen) {
             launchAlarmActivityIfFullScreenIntentBlocked()
         }
         startRinging(style)
@@ -175,7 +175,7 @@ class AlarmRingService : Service() {
             .withAccentColor(this)
         // The full-screen intent is what takes over the lock screen; SHORT_SIGNAL exists
         // specifically to avoid that, so it must stay an ordinary notification.
-        if (style == AlarmStyle.FULL_SCREEN) {
+        if (style.wakesScreen) {
             builder.setFullScreenIntent(fullScreenPendingIntent, true)
         }
         return builder.build()
@@ -241,7 +241,7 @@ class AlarmRingService : Service() {
             .addAction(0, snoozeLabel, snoozePendingIntent)
             .addAction(0, "Остановить", stopPendingIntent)
             .withAccentColor(this)
-        if (style == AlarmStyle.FULL_SCREEN) {
+        if (style.wakesScreen) {
             builder.setFullScreenIntent(fullScreenPendingIntent, true)
         }
         return builder.build()
@@ -269,6 +269,15 @@ class AlarmRingService : Service() {
             AlarmChime.play(this, AlarmChime.SHORT_SIGNAL_MILLIS, AlarmChime.PATTERN_SHORT_SIGNAL)
             return
         }
+        // SCREEN_NO_SOUND wakes the screen like FULL_SCREEN but skips the audio entirely —
+        // the continuous vibration below is its only alert.
+        if (style == AlarmStyle.FULL_SCREEN) {
+            startAlarmSound()
+        }
+        startContinuousVibration()
+    }
+
+    private fun startAlarmSound() {
         val alarmUri = RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
         mediaPlayer = MediaPlayer().apply {
@@ -287,7 +296,9 @@ class AlarmRingService : Service() {
                 // Playback can fail on some devices/emulators; vibration still alerts the user.
             }
         }
+    }
 
+    private fun startContinuousVibration() {
         val pattern = longArrayOf(0, 800, 500)
         vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             getSystemService(VibratorManager::class.java).defaultVibrator

@@ -292,10 +292,10 @@ fun TimerScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // Irrelevant once both alarm styles are set to the short signal — that style never
-            // attempts a full-screen takeover, so lacking the permission for it changes nothing.
-            val fullScreenMatters = state.settings.timerAlarmStyle == AlarmStyle.FULL_SCREEN ||
-                state.settings.reminderAlarmStyle == AlarmStyle.FULL_SCREEN
+            // Irrelevant once both categories use the short signal — that is the only style
+            // that never attempts a full-screen takeover.
+            val fullScreenMatters = state.settings.timerAlarmStyle.wakesScreen ||
+                state.settings.reminderAlarmStyle.wakesScreen
             if ((!fullScreenIntentAllowed && fullScreenMatters) || !exactAlarmAllowed) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(
@@ -497,8 +497,8 @@ fun SettingsScreen(
         Text("Сигнал будильника", fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "«Короткий сигнал» — короткий звук и вибрация без включения экрана и без " +
-                "полноэкранного окна поверх блокировки.",
+            "«Короткий сигнал» — звук и вибрация без включения экрана. " +
+                "«Экран и вибро без звука» — экран включается и звонит вибрация, но без звука.",
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(16.dp))

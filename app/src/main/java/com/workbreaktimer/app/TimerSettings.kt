@@ -4,13 +4,18 @@ import android.content.Context
 import android.content.SharedPreferences
 
 /** How an alarm announces itself when it fires. */
-enum class AlarmStyle { FULL_SCREEN, SHORT_SIGNAL }
+enum class AlarmStyle { FULL_SCREEN, SHORT_SIGNAL, SCREEN_NO_SOUND }
 
 val AlarmStyle.label: String
     get() = when (this) {
         AlarmStyle.FULL_SCREEN -> "Полный будильник"
         AlarmStyle.SHORT_SIGNAL -> "Короткий сигнал без экрана"
+        AlarmStyle.SCREEN_NO_SOUND -> "Экран и вибро без звука"
     }
+
+/** Whether this style wakes the screen and shows AlarmActivity over the lock screen. */
+val AlarmStyle.wakesScreen: Boolean
+    get() = this != AlarmStyle.SHORT_SIGNAL
 
 /**
  * Everything the user configures, kept apart from the running timer state so that adding a
