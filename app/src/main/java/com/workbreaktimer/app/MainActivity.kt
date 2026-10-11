@@ -100,6 +100,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         TimerManager.init(this)
         ReminderManager.init(this)
+        AirplaneScheduleManager.init(this)
+        ShizukuBridge.init(this)
         requestNotificationPermissionIfNeeded()
 
         setContent {
@@ -107,9 +109,9 @@ class MainActivity : ComponentActivity() {
                 val navController = rememberNavController()
                 val backStackEntry by navController.currentBackStackEntryAsState()
                 val route = backStackEntry?.destination?.route
-                // The bar belongs to the two top-level modes only; detail screens get the
-                // whole height and their own back button.
-                val topLevel = route == ROUTE_TIMER || route == ROUTE_REMINDERS
+                // The bar belongs to the top-level modes only; detail screens get the whole
+                // height and their own back button.
+                val topLevel = route == ROUTE_TIMER || route == ROUTE_REMINDERS || route == ROUTE_AIRPLANE
 
                 Scaffold(
                     // On every screen, so a ringing reminder can always be stopped from the app.
@@ -128,6 +130,12 @@ class MainActivity : ComponentActivity() {
                                     onClick = { navController.switchTab(ROUTE_REMINDERS) },
                                     icon = { Text("🔔", fontSize = 18.sp) },
                                     label = { Text("Напоминания") }
+                                )
+                                NavigationBarItem(
+                                    selected = route == ROUTE_AIRPLANE,
+                                    onClick = { navController.switchTab(ROUTE_AIRPLANE) },
+                                    icon = { Text("✈", fontSize = 18.sp) },
+                                    label = { Text("Самолёт") }
                                 )
                             }
                         }
@@ -179,6 +187,20 @@ class MainActivity : ComponentActivity() {
                                     onDone = { navController.popBackStack() }
                                 )
                             }
+                            composable(ROUTE_AIRPLANE) {
+                                AirplaneScreen(
+                                    onEditRule = { ruleId ->
+                                        navController.navigate("airplane_rule/${ruleId ?: NEW_REMINDER}")
+                                    }
+                                )
+                            }
+                            composable("airplane_rule/{ruleId}") { entry ->
+                                val ruleId = entry.arguments?.getString("ruleId")
+                                AirplaneRuleEditorScreen(
+                                    ruleId = ruleId.takeIf { it != NEW_REMINDER },
+                                    onDone = { navController.popBackStack() }
+                                )
+                            }
                         }
                     }
                 }
@@ -189,12 +211,15 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val ROUTE_TIMER = "timer"
         const val ROUTE_REMINDERS = "reminders"
+        const val ROUTE_AIRPLANE = "airplane"
         const val NEW_REMINDER = "new"
     }
 
     override fun onResume() {
         super.onResume()
         refreshPermissionState()
+        // The user may have started Shizuku or granted access while the app was in the background.
+        ShizukuBridge.refresh()
     }
 
     private fun refreshPermissionState() {

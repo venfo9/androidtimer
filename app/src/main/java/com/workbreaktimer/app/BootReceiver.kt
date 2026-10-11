@@ -5,8 +5,8 @@ import android.content.Context
 import android.content.Intent
 
 /**
- * A reboot clears the whole AlarmManager table, so every reminder has to be armed again or a
- * scheduler silently stops working after the first restart.
+ * A reboot clears the whole AlarmManager table, so every reminder and airplane rule has to be
+ * armed again or a scheduler silently stops working after the first restart.
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -16,6 +16,7 @@ class BootReceiver : BroadcastReceiver() {
             "android.intent.action.QUICKBOOT_POWERON" -> {
                 ReminderManager.init(context)
                 ReminderManager.rescheduleAll(context)
+                AirplaneScheduleManager.rescheduleAll(context)
             }
         }
     }
