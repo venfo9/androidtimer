@@ -1,6 +1,5 @@
 package com.workbreaktimer.app
 
-import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -12,7 +11,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -43,8 +41,9 @@ class AlarmActivity : ComponentActivity() {
             val finishedPhase = state.phase
             // Captured once: the service clears these as it stops, and the screen should keep
             // showing what it was opened for while the user is reading it.
-            val reminderId = remember { AlarmRingService.ringingReminderId }
-            val reminderTitle = remember { AlarmRingService.ringingReminderTitle }
+            val ringing = remember { AlarmRingService.ringingReminder.value }
+            val reminderId = ringing?.id
+            val reminderTitle = ringing?.title
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Column(
@@ -65,16 +64,14 @@ class AlarmActivity : ComponentActivity() {
                             )
                             Spacer(Modifier.height(48.dp))
                             Button(onClick = {
-                                ReminderManager.setCompleted(this@AlarmActivity, reminderId, true)
-                                stopService(Intent(this@AlarmActivity, AlarmRingService::class.java))
+                                ReminderRingActions.done(this@AlarmActivity, reminderId)
                                 finish()
                             }) {
                                 Text("Выполнено", fontSize = 20.sp)
                             }
                             Spacer(Modifier.height(16.dp))
                             OutlinedButton(onClick = {
-                                ReminderManager.snooze(this@AlarmActivity, reminderId)
-                                stopService(Intent(this@AlarmActivity, AlarmRingService::class.java))
+                                ReminderRingActions.snooze(this@AlarmActivity, reminderId)
                                 finish()
                             }) {
                                 Text(
@@ -88,31 +85,12 @@ class AlarmActivity : ComponentActivity() {
                             }
 
                             if (showDisableConfirm) {
-                                AlertDialog(
-                                    onDismissRequest = { showDisableConfirm = false },
-                                    title = { Text("Отключить повторы?") },
-                                    text = {
-                                        Text(
-                                            "Сигнал выключится, задача не будет отмечена " +
-                                                "выполненной, и это напоминание больше не " +
-                                                "сработает. Включить обратно можно в списке " +
-                                                "напоминаний."
-                                        )
+                                DisableReminderConfirmDialog(
+                                    onConfirm = {
+                                        ReminderRingActions.disable(this@AlarmActivity, reminderId)
+                                        finish()
                                     },
-                                    confirmButton = {
-                                        TextButton(onClick = {
-                                            ReminderManager.setEnabled(this@AlarmActivity, reminderId, false)
-                                            stopService(Intent(this@AlarmActivity, AlarmRingService::class.java))
-                                            finish()
-                                        }) {
-                                            Text("Отключить")
-                                        }
-                                    },
-                                    dismissButton = {
-                                        TextButton(onClick = { showDisableConfirm = false }) {
-                                            Text("Отмена")
-                                        }
-                                    }
+                                    onDismiss = { showDisableConfirm = false }
                                 )
                             }
                             return@Column

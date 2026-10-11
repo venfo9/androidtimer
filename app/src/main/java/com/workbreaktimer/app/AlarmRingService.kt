@@ -17,6 +17,12 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+/** A reminder that is ringing at this moment. */
+data class RingingReminder(val id: String, val title: String?)
 
 /**
  * Short-lived foreground service that rings + vibrates + shows a full-screen
@@ -34,27 +40,28 @@ class AlarmRingService : Service() {
     private var reminderId: String? = null
     private var reminderTitle: String? = null
 
+    /** Style of the alarm currently ringing; null until ringing starts. */
+    private var ringingStyle: AlarmStyle? = null
+
     companion object {
         const val CHANNEL_ID = "alarm_channel"
         const val NOTIFICATION_ID = 42
         const val ACTION_STOP = "com.workbreaktimer.app.action.STOP_RING"
         const val ACTION_ADVANCE = "com.workbreaktimer.app.action.ADVANCE_PHASE"
         const val ACTION_SNOOZE = "com.workbreaktimer.app.action.SNOOZE"
+        const val ACTION_REPOST = "com.workbreaktimer.app.action.REPOST_NOTIFICATION"
         const val EXTRA_REMINDER_ID = "reminder_id"
         const val EXTRA_REMINDER_TITLE = "reminder_title"
         private const val WAKE_LOCK_TIMEOUT_MILLIS = 5 * 60 * 1000L
 
-        /**
-         * Which reminder, if any, is ringing right now. AlarmActivity reads this to decide
-         * what to draw; a bound service would be heavier than this one fact deserves.
-         */
-        @Volatile
-        var ringingReminderId: String? = null
-            private set
+        private val _ringingReminder = MutableStateFlow<RingingReminder?>(null)
 
-        @Volatile
-        var ringingReminderTitle: String? = null
-            private set
+        /**
+         * The reminder ringing right now, if any. AlarmActivity and the in-app banner read it.
+         * Observable because the banner has to appear and disappear on its own while the app
+         * stays open.
+         */
+        val ringingReminder: StateFlow<RingingReminder?> = _ringingReminder.asStateFlow()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -91,16 +98,30 @@ class AlarmRingService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // Android 14+ lets the user swipe away even an ongoing notification, which left the
+        // alarm ringing with no way to stop it. Putting the notification straight back keeps
+        // the stop buttons reachable for as long as the sound plays.
+        if (intent?.action == ACTION_REPOST) {
+            val style = ringingStyle
+            if (style == null) {
+                // The swipe arrived after the alarm had already stopped.
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIFICATION_ID, buildNotification(style))
+            return START_STICKY
+        }
 
         intent?.getStringExtra(EXTRA_REMINDER_ID)?.let { id ->
             reminderId = id
             reminderTitle = intent.getStringExtra(EXTRA_REMINDER_TITLE)
-            ringingReminderId = id
-            ringingReminderTitle = reminderTitle
+            _ringingReminder.value = RingingReminder(id, reminderTitle)
         }
 
         TimerManager.init(this)
         val style = currentAlarmStyle()
+        ringingStyle = style
         if (style.wakesScreen) {
             acquireScreenWakeLock()
         }
@@ -172,6 +193,7 @@ class AlarmRingService : Service() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .addAction(0, "Отложить (${formatDurationShort(snoozeMillis)})", servicePendingIntent(ACTION_SNOOZE, 2))
             .addAction(0, "Выполнено", servicePendingIntent(ACTION_STOP, 0))
+            .setDeleteIntent(servicePendingIntent(ACTION_REPOST, 3))
             .withAccentColor(this)
         // The full-screen intent is what takes over the lock screen; SHORT_SIGNAL exists
         // specifically to avoid that, so it must stay an ordinary notification.
@@ -240,6 +262,7 @@ class AlarmRingService : Service() {
             .addAction(0, advanceLabel, advancePendingIntent)
             .addAction(0, snoozeLabel, snoozePendingIntent)
             .addAction(0, "Остановить", stopPendingIntent)
+            .setDeleteIntent(servicePendingIntent(ACTION_REPOST, 3))
             .withAccentColor(this)
         if (style.wakesScreen) {
             builder.setFullScreenIntent(fullScreenPendingIntent, true)
@@ -319,9 +342,9 @@ class AlarmRingService : Service() {
         vibrator?.cancel()
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
-        if (reminderId != null && reminderId == ringingReminderId) {
-            ringingReminderId = null
-            ringingReminderTitle = null
+        ringingStyle = null
+        if (reminderId != null && _ringingReminder.value?.id == reminderId) {
+            _ringingReminder.value = null
         }
         super.onDestroy()
     }

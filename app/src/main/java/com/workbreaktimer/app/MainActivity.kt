@@ -112,6 +112,8 @@ class MainActivity : ComponentActivity() {
                 val topLevel = route == ROUTE_TIMER || route == ROUTE_REMINDERS
 
                 Scaffold(
+                    // On every screen, so a ringing reminder can always be stopped from the app.
+                    topBar = { RingingReminderBanner() },
                     bottomBar = {
                         if (topLevel) {
                             NavigationBar {
@@ -241,6 +243,48 @@ class MainActivity : ComponentActivity() {
                 Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName"))
             )
         }
+    }
+}
+
+/**
+ * Controls for a reminder that is ringing right now. The notification is the usual place for
+ * these, but the user can swipe it away, and this keeps the alarm stoppable from the app.
+ */
+@Composable
+private fun RingingReminderBanner() {
+    val ringing by AlarmRingService.ringingReminder.collectAsState()
+    val reminder = ringing ?: return
+    val context = LocalContext.current
+    val timerState by TimerManager.state.collectAsState()
+    var confirmDisable by remember(reminder.id) { mutableStateOf(false) }
+
+    Card(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Звонит напоминание", fontSize = 13.sp)
+            Text(reminder.title ?: "Напоминание", fontSize = 18.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { ReminderRingActions.done(context, reminder.id) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Выполнено") }
+                OutlinedButton(
+                    onClick = { ReminderRingActions.snooze(context, reminder.id) },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Отложить ${formatDurationShort(timerState.settings.snoozeMillis)}") }
+            }
+            TextButton(onClick = { confirmDisable = true }) { Text("Отключить") }
+        }
+    }
+
+    if (confirmDisable) {
+        DisableReminderConfirmDialog(
+            onConfirm = {
+                confirmDisable = false
+                ReminderRingActions.disable(context, reminder.id)
+            },
+            onDismiss = { confirmDisable = false }
+        )
     }
 }
 
