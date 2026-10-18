@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -102,6 +103,7 @@ class MainActivity : ComponentActivity() {
         ReminderManager.init(this)
         AirplaneScheduleManager.init(this)
         ShizukuBridge.init(this)
+        WorkoutStore.init(this)
         requestNotificationPermissionIfNeeded()
 
         setContent {
@@ -111,7 +113,8 @@ class MainActivity : ComponentActivity() {
                 val route = backStackEntry?.destination?.route
                 // The bar belongs to the top-level modes only; detail screens get the whole
                 // height and their own back button.
-                val topLevel = route == ROUTE_TIMER || route == ROUTE_REMINDERS || route == ROUTE_AIRPLANE
+                val topLevel = route == ROUTE_TIMER || route == ROUTE_REMINDERS ||
+                    route == ROUTE_AIRPLANE || route == ROUTE_WORKOUT
 
                 Scaffold(
                     // On every screen, so a ringing reminder can always be stopped from the app.
@@ -136,6 +139,12 @@ class MainActivity : ComponentActivity() {
                                     onClick = { navController.switchTab(ROUTE_AIRPLANE) },
                                     icon = { Text("✈", fontSize = 18.sp) },
                                     label = { Text("Самолёт") }
+                                )
+                                NavigationBarItem(
+                                    selected = route == ROUTE_WORKOUT,
+                                    onClick = { navController.switchTab(ROUTE_WORKOUT) },
+                                    icon = { Text("🏋", fontSize = 18.sp) },
+                                    label = { Text("Тренировка") }
                                 )
                             }
                         }
@@ -201,6 +210,24 @@ class MainActivity : ComponentActivity() {
                                     onDone = { navController.popBackStack() }
                                 )
                             }
+                            composable(ROUTE_WORKOUT) {
+                                WorkoutScreen(
+                                    onEditTemplate = { templateId ->
+                                        navController.navigate("workout_template/${templateId ?: NEW_REMINDER}")
+                                    },
+                                    onOpenHistory = { navController.navigate("workout_history") }
+                                )
+                            }
+                            composable("workout_template/{templateId}") { entry ->
+                                val templateId = entry.arguments?.getString("templateId")
+                                WorkoutTemplateEditorScreen(
+                                    templateId = templateId.takeIf { it != NEW_REMINDER },
+                                    onDone = { navController.popBackStack() }
+                                )
+                            }
+                            composable("workout_history") {
+                                WorkoutHistoryScreen(onBack = { navController.popBackStack() })
+                            }
                         }
                     }
                 }
@@ -212,7 +239,21 @@ class MainActivity : ComponentActivity() {
         const val ROUTE_TIMER = "timer"
         const val ROUTE_REMINDERS = "reminders"
         const val ROUTE_AIRPLANE = "airplane"
+        const val ROUTE_WORKOUT = "workout"
         const val NEW_REMINDER = "new"
+    }
+
+    /**
+     * Volume down pauses and resumes a workout, so a hand on the bars does not have to reach
+     * for the screen. Volume up keeps adjusting the volume. Only works while this activity is
+     * on screen; with the screen off the system keeps the keys for itself.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && WorkoutEngine.state.value.active) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) WorkoutEngine.togglePause()
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onResume() {

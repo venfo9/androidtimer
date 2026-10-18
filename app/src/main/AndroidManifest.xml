@@ -21,6 +21,10 @@
          installed and open it. -->
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
+        <!-- Lets the workout counter find the phone's text-to-speech engine. -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
 
     <application
@@ -52,6 +56,11 @@
 
         <service
             android:name=".AlarmRingService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <service
+            android:name=".WorkoutService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
