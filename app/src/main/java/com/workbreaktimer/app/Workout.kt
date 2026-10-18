@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 
 /** One part of a repetition, e.g. "Вниз" for 3 seconds. */
@@ -19,10 +20,16 @@ data class WorkoutTemplate(
     val phases: List<WorkoutPhase>,
     val reps: Int,
     val sets: Int,
-    val restSeconds: Int
+    val restSeconds: Int,
+    /** Kilograms for every set; 0 means body weight only. */
+    val weightKg: Double = 0.0,
+    /** A weight per set when they differ, e.g. a pyramid; null when [weightKg] applies to all. */
+    val setWeights: List<Double>? = null
 ) {
     /** "3-1-1", the way tempo is written in training plans. */
     val tempoLabel: String get() = phases.joinToString("-") { it.seconds.toString() }
+
+    fun weightForSet(index: Int): Double = setWeights?.getOrNull(index) ?: weightKg
 
     companion object {
         const val MAX_PHASES = 5
@@ -30,8 +37,16 @@ data class WorkoutTemplate(
         const val MAX_REPS = 100
         const val MAX_SETS = 20
         const val MAX_REST_SECONDS = 600
+        const val MAX_WEIGHT_KG = 500.0
+        const val WEIGHT_STEP_KG = 2.5
     }
 }
+
+/** "12,5 кг", without a trailing ",0" for whole numbers. */
+fun formatWeight(kg: Double): String = formatNumber(kg) + " кг"
+
+fun formatNumber(value: Double): String =
+    if (value % 1.0 == 0.0) value.toLong().toString() else "%.2f".format(Locale("ru"), value).trimEnd('0').trimEnd(',')
 
 /** One finished or stopped workout in the history. */
 data class WorkoutSession(
@@ -41,15 +56,33 @@ data class WorkoutSession(
     val durationMillis: Long,
     /** Repetitions done in each set that was started. */
     val repsPerSet: List<Int>,
+    /** Kilograms of each set in [repsPerSet]; empty for sessions saved before weights existed. */
+    val weightsPerSet: List<Double>,
     val plannedReps: Int,
     val plannedSets: Int,
     /** False when the user stopped before the last set ended. */
     val completed: Boolean
 ) {
     val totalReps: Int get() = repsPerSet.sum()
+
+    fun weightOfSet(index: Int): Double = weightsPerSet.getOrElse(index) { 0.0 }
+
+    /** Kilograms lifted in total, reps times weight summed over sets. */
+    val volumeKg: Double get() = repsPerSet.indices.sumOf { repsPerSet[it] * weightOfSet(it) }
+
+    /** "10 × 20 кг · 10 × 22,5 кг", or "10 · 10" when no set had a weight. */
+    val setsLabel: String
+        get() = if (repsPerSet.indices.all { weightOfSet(it) == 0.0 }) {
+            repsPerSet.joinToString(" · ")
+        } else {
+            repsPerSet.indices.joinToString(" · ") { i ->
+                val kg = weightOfSet(i)
+                if (kg == 0.0) "${repsPerSet[i]}" else "${repsPerSet[i]} × ${formatWeight(kg)}"
+            }
+        }
 }
 
-data class ExerciseStats(val name: String, val workouts: Int, val sets: Int, val reps: Int)
+data class ExerciseStats(val name: String, val workouts: Int, val sets: Int, val reps: Int, val volumeKg: Double)
 
 data class WorkoutData(
     val templates: List<WorkoutTemplate> = emptyList(),
@@ -125,7 +158,8 @@ object WorkoutStore {
                     name = name,
                     workouts = sessions.size,
                     sets = sessions.sumOf { it.repsPerSet.size },
-                    reps = sessions.sumOf { it.totalReps }
+                    reps = sessions.sumOf { it.totalReps },
+                    volumeKg = sessions.sumOf { it.volumeKg }
                 )
             }
             .sortedByDescending { it.reps }
@@ -162,12 +196,20 @@ object WorkoutStore {
                         .put("reps", template.reps)
                         .put("sets", template.sets)
                         .put("rest", template.restSeconds)
+                        .put("weight", template.weightKg)
+                        .also { json ->
+                            template.setWeights?.let { weights ->
+                                json.put("set_weights", JSONArray().also { array -> weights.forEach { array.put(it) } })
+                            }
+                        }
                 )
             }
             val sessions = JSONArray()
             for (session in newState.sessions) {
                 val reps = JSONArray()
                 session.repsPerSet.forEach { reps.put(it) }
+                val weights = JSONArray()
+                session.weightsPerSet.forEach { weights.put(it) }
                 sessions.put(
                     JSONObject()
                         .put("id", session.id)
@@ -175,6 +217,7 @@ object WorkoutStore {
                         .put("started", session.startedAtMillis)
                         .put("duration", session.durationMillis)
                         .put("reps_per_set", reps)
+                        .put("weights_per_set", weights)
                         .put("planned_reps", session.plannedReps)
                         .put("planned_sets", session.plannedSets)
                         .put("completed", session.completed)
@@ -203,19 +246,25 @@ object WorkoutStore {
                 phases = phases,
                 reps = item.optInt("reps", 10).coerceAtLeast(1),
                 sets = item.optInt("sets", 1).coerceAtLeast(1),
-                restSeconds = item.optInt("rest", 90).coerceAtLeast(0)
+                restSeconds = item.optInt("rest", 90).coerceAtLeast(0),
+                weightKg = item.optDouble("weight", 0.0).takeUnless { it.isNaN() } ?: 0.0,
+                setWeights = item.optJSONArray("set_weights")?.let { array ->
+                    (0 until array.length()).map { array.optDouble(it, 0.0) }
+                }
             )
         }
         val sessionArray = root.optJSONArray("sessions") ?: JSONArray()
         val sessions = (0 until sessionArray.length()).mapNotNull { i ->
             val item = sessionArray.optJSONObject(i) ?: return@mapNotNull null
             val repsArray = item.optJSONArray("reps_per_set") ?: JSONArray()
+            val weightsArray = item.optJSONArray("weights_per_set") ?: JSONArray()
             WorkoutSession(
                 id = item.optString("id"),
                 name = item.optString("name"),
                 startedAtMillis = item.optLong("started"),
                 durationMillis = item.optLong("duration"),
                 repsPerSet = (0 until repsArray.length()).map { repsArray.optInt(it) },
+                weightsPerSet = (0 until weightsArray.length()).map { weightsArray.optDouble(it, 0.0) },
                 plannedReps = item.optInt("planned_reps"),
                 plannedSets = item.optInt("planned_sets"),
                 completed = item.optBoolean("completed")

@@ -23,6 +23,8 @@ data class WorkoutRunState(
     val restLeft: Int = 0,
     val pausedFrom: WorkoutStage? = null,
     val repsPerSet: List<Int> = emptyList(),
+    /** Kilograms per set; starts from the template and the user can change it on the go. */
+    val weightsPerSet: List<Double> = emptyList(),
     val startedAtMillis: Long = 0,
     /** What went into the history; set once the workout is FINISHED, null if nothing was done. */
     val summary: WorkoutSession? = null
@@ -32,6 +34,8 @@ data class WorkoutRunState(
             stage == WorkoutStage.REST || stage == WorkoutStage.PAUSED
 
     val repsInCurrentSet: Int get() = repsPerSet.getOrElse(setIndex) { 0 }
+
+    val weightOfCurrentSet: Double get() = weightsPerSet.getOrElse(setIndex) { 0.0 }
 
     /** The stage the screen should describe; a pause keeps showing where it stopped. */
     val shownStage: WorkoutStage get() = if (stage == WorkoutStage.PAUSED) pausedFrom ?: stage else stage
@@ -86,6 +90,7 @@ object WorkoutEngine {
                 template = template,
                 countdown = START_COUNTDOWN,
                 repsPerSet = List(template.sets) { 0 },
+                weightsPerSet = List(template.sets) { template.weightForSet(it) },
                 startedAtMillis = System.currentTimeMillis()
             )
         )
@@ -145,6 +150,25 @@ object WorkoutEngine {
         // Pushed out of the countdown range, the music comes back up until the countdown starts over.
         if (current.restLeft + seconds > REST_COUNTDOWN) voice?.releaseFocus()
         publish(current.copy(restLeft = current.restLeft + seconds))
+    }
+
+    /**
+     * Changes the weight of the current set (during rest, of the next one). Later sets that
+     * were planned with the same weight follow, so with one weight for all sets a correction
+     * sticks, while a pyramid keeps its other steps.
+     */
+    fun setWeight(kg: Double) {
+        val current = _state.value
+        if (!current.active) return
+        val old = current.weightOfCurrentSet
+        val weights = current.weightsPerSet.mapIndexed { index, weight ->
+            when {
+                index == current.setIndex -> kg
+                index > current.setIndex && weight == old -> kg
+                else -> weight
+            }
+        }
+        publish(current.copy(weightsPerSet = weights))
     }
 
     /** Ends early and keeps what was done. */
@@ -259,7 +283,8 @@ object WorkoutEngine {
         stopSound()
         if (completed) voice?.tone(WorkoutVoice.Tone.DONE)
         // Sets that never started say nothing about the workout and only clutter the history.
-        val repsPerSet = current.repsPerSet.filterIndexed { index, reps -> reps > 0 || index < current.setIndex }
+        val kept = current.repsPerSet.indices.filter { index -> current.repsPerSet[index] > 0 || index < current.setIndex }
+        val repsPerSet = kept.map { current.repsPerSet[it] }
         val session = if (repsPerSet.sum() > 0) {
             WorkoutSession(
                 id = UUID.randomUUID().toString(),
@@ -267,6 +292,7 @@ object WorkoutEngine {
                 startedAtMillis = current.startedAtMillis,
                 durationMillis = System.currentTimeMillis() - current.startedAtMillis,
                 repsPerSet = repsPerSet,
+                weightsPerSet = kept.map { current.weightsPerSet.getOrElse(it) { 0.0 } },
                 plannedReps = template.reps,
                 plannedSets = template.sets,
                 completed = completed

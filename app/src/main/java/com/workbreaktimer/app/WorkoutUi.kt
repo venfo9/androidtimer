@@ -13,21 +13,24 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,7 +42,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
@@ -71,6 +76,15 @@ private fun repsLabel(n: Int) = plural(n, "повторение", "повтор�
 private fun workoutsLabel(n: Int) = plural(n, "тренировка", "тренировки", "тренировок")
 
 private fun restLabel(seconds: Int) = if (seconds == 0) "без отдыха" else formatClock(seconds * 1000L)
+
+private fun templateWeightLabel(template: WorkoutTemplate): String? {
+    val perSet = template.setWeights
+    return when {
+        perSet != null -> "Вес по подходам: " + perSet.joinToString(" / ") { formatNumber(it) } + " кг"
+        template.weightKg > 0 -> "Вес ${formatWeight(template.weightKg)}"
+        else -> null
+    }
+}
 
 @Composable
 fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) {
@@ -140,6 +154,7 @@ fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) 
                             " · отдых ${restLabel(template.restSeconds)}",
                         fontSize = 13.sp
                     )
+                    templateWeightLabel(template)?.let { Text(it, fontSize = 13.sp) }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = {
@@ -156,9 +171,8 @@ fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) 
 
         Spacer(Modifier.height(24.dp))
         Text(
-            "Перед стартом идёт отсчёт 5 секунд. Во время тренировки кнопка «громкость вниз» " +
-                "ставит паузу и продолжает, пока экран включён. После паузы повторение начинается " +
-                "заново, с отсчёта 3 секунды.",
+            "Перед стартом идёт отсчёт 5 секунд. После паузы повторение начинается заново, " +
+                "с отсчёта 3 секунды.",
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -181,7 +195,8 @@ private fun WorkoutSummaryCard(run: WorkoutRunState, onOpenHistory: () -> Unit) 
                 )
                 Spacer(Modifier.height(4.dp))
                 Text("${setsLabel(session.repsPerSet.size)} · ${repsLabel(session.totalReps)} · ${formatClock(session.durationMillis)}")
-                Text("По подходам: ${session.repsPerSet.joinToString(" · ")}", fontSize = 13.sp)
+                Text("По подходам: ${session.setsLabel}", fontSize = 13.sp)
+                if (session.volumeKg > 0) Text("Объём ${formatWeight(session.volumeKg)}", fontSize = 13.sp)
             }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -198,6 +213,7 @@ private fun ActiveWorkout(run: WorkoutRunState) {
     val stage = run.shownStage
     val paused = run.stage == WorkoutStage.PAUSED
     var confirmReset by remember { mutableStateOf(false) }
+    var editWeight by remember { mutableStateOf(false) }
 
     val color = when (stage) {
         WorkoutStage.WORK -> PHASE_COLORS[run.phaseIndex % PHASE_COLORS.size]
@@ -281,6 +297,15 @@ private fun ActiveWorkout(run: WorkoutRunState) {
                 fontWeight = FontWeight.Medium
             )
         }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val kg = run.weightOfCurrentSet
+            Text(
+                (if (resting) "Вес следующего подхода: " else "Вес: ") +
+                    if (kg == 0.0) "без веса" else formatWeight(kg),
+                fontSize = 18.sp
+            )
+            TextButton(onClick = { editWeight = true }) { Text("Изменить") }
+        }
 
         Spacer(Modifier.height(32.dp))
         Button(
@@ -313,6 +338,28 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         )
     }
 
+    if (editWeight) {
+        var draft by remember { mutableStateOf(run.weightOfCurrentSet) }
+        AlertDialog(
+            onDismissRequest = { editWeight = false },
+            title = { Text("Вес подхода ${run.setIndex + 1}, кг") },
+            text = {
+                Column {
+                    WeightField(draft) { draft = it }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Следующие подходы с тем же весом получат новый вес.", fontSize = 13.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    WorkoutEngine.setWeight(draft)
+                    editWeight = false
+                }) { Text("Готово") }
+            },
+            dismissButton = { TextButton(onClick = { editWeight = false }) { Text("Отмена") } }
+        )
+    }
+
     if (confirmReset) {
         AlertDialog(
             onDismissRequest = { confirmReset = false },
@@ -342,6 +389,13 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
     var reps by remember { mutableStateOf(initial.reps) }
     var sets by remember { mutableStateOf(initial.sets) }
     var rest by remember { mutableStateOf(initial.restSeconds) }
+    var weight by remember { mutableStateOf(initial.weightKg) }
+    var perSetWeights by remember { mutableStateOf(initial.setWeights != null) }
+    var setWeights by remember { mutableStateOf(initial.setWeights ?: emptyList()) }
+
+    // Sets added after the weights were typed take the last weight in the list.
+    fun resolvedSetWeights(): List<Double> =
+        List(sets) { index -> setWeights.getOrElse(index) { setWeights.lastOrNull() ?: weight } }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Column(
@@ -364,7 +418,7 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
 
         Spacer(Modifier.height(20.dp))
         Text("Фазы одного повторения", fontWeight = FontWeight.Medium)
-        Text("Голос считает секунды каждой фазы с единицы.", fontSize = 13.sp)
+        Text("Справа длительность фазы в секундах. Голос считает секунды каждой фазы с единицы.", fontSize = 13.sp)
         Spacer(Modifier.height(8.dp))
         phases.forEachIndexed { index, phase ->
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -378,7 +432,7 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(8.dp))
-                Stepper(value = phase.seconds, range = 1..WorkoutTemplate.MAX_PHASE_SECONDS, label = { "$it с" }) { seconds ->
+                IntField(phase.seconds, 1..WorkoutTemplate.MAX_PHASE_SECONDS) { seconds ->
                     phases = phases.toMutableList().also { it[index] = phase.copy(seconds = seconds) }
                 }
                 if (phases.size > 1) {
@@ -396,10 +450,44 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
         }
 
         Spacer(Modifier.height(20.dp))
-        LabeledStepper("Повторений в подходе", reps, 1..WorkoutTemplate.MAX_REPS) { reps = it }
-        LabeledStepper("Подходов", sets, 1..WorkoutTemplate.MAX_SETS) { sets = it }
-        LabeledStepper("Отдых между подходами", rest, 0..WorkoutTemplate.MAX_REST_SECONDS, step = 15, label = ::restLabel) {
-            rest = it
+        LabeledRow("Повторений в подходе") {
+            IntField(reps, 1..WorkoutTemplate.MAX_REPS) { reps = it }
+        }
+        LabeledRow("Подходов") {
+            IntField(sets, 1..WorkoutTemplate.MAX_SETS) { sets = it }
+        }
+        LabeledRow("Отдых, сек (${restLabel(rest)})") {
+            IntField(rest, 0..WorkoutTemplate.MAX_REST_SECONDS, step = 15) { rest = it }
+        }
+
+        Spacer(Modifier.height(20.dp))
+        Text("Вес, кг", fontWeight = FontWeight.Medium)
+        Text("0 означает без веса, только своё тело.", fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(
+                checked = perSetWeights,
+                onCheckedChange = { on ->
+                    if (on) setWeights = List(sets) { weight }
+                    perSetWeights = on
+                }
+            )
+            Spacer(Modifier.width(12.dp))
+            Text("Разный вес по подходам")
+        }
+        if (perSetWeights) {
+            val current = resolvedSetWeights()
+            current.forEachIndexed { index, kg ->
+                LabeledRow("Подход ${index + 1}") {
+                    WeightField(kg) { value ->
+                        setWeights = current.toMutableList().also { it[index] = value }
+                    }
+                }
+            }
+        } else {
+            LabeledRow("На все подходы") {
+                WeightField(weight) { weight = it }
+            }
         }
 
         Spacer(Modifier.height(32.dp))
@@ -412,7 +500,9 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
                         phases = phases.mapIndexed { i, phase -> phase.copy(name = phase.name.trim().ifEmpty { "Фаза ${i + 1}" }) },
                         reps = reps,
                         sets = sets,
-                        restSeconds = rest
+                        restSeconds = rest,
+                        weightKg = if (perSetWeights) resolvedSetWeights().first() else weight,
+                        setWeights = if (perSetWeights) resolvedSetWeights() else null
                     )
                 )
                 onDone()
@@ -444,52 +534,102 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
 }
 
 @Composable
-private fun LabeledStepper(
-    title: String,
-    value: Int,
-    range: IntRange,
-    step: Int = 1,
-    label: (Int) -> String = { it.toString() },
-    onChange: (Int) -> Unit
-) {
+private fun LabeledRow(title: String, content: @Composable () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(title, modifier = Modifier.weight(1f))
-        Stepper(value, range, step, label, onChange)
+        content()
     }
 }
 
 @Composable
-private fun Stepper(
-    value: Int,
-    range: IntRange,
-    step: Int = 1,
-    label: (Int) -> String = { it.toString() },
-    onChange: (Int) -> Unit
+private fun IntField(value: Int, range: IntRange, step: Int = 1, onChange: (Int) -> Unit) {
+    NumberField(
+        value = value.toDouble(),
+        min = range.first.toDouble(),
+        max = range.last.toDouble(),
+        step = step.toDouble(),
+        decimal = false
+    ) { onChange(it.toInt()) }
+}
+
+@Composable
+private fun WeightField(kg: Double, onChange: (Double) -> Unit) {
+    NumberField(
+        value = kg,
+        min = 0.0,
+        max = WorkoutTemplate.MAX_WEIGHT_KG,
+        step = WorkoutTemplate.WEIGHT_STEP_KG,
+        decimal = true,
+        fieldWidth = 80.dp,
+        onChange = onChange
+    )
+}
+
+/** A number typed on the keyboard, or nudged by a step with the buttons on either side. */
+@Composable
+private fun NumberField(
+    value: Double,
+    min: Double,
+    max: Double,
+    step: Double,
+    decimal: Boolean,
+    fieldWidth: Dp = 64.dp,
+    onChange: (Double) -> Unit
 ) {
+    // The text belongs to the user while typing: "12," is on its way to "12,5" and must not be
+    // reformatted away. It follows the value only when the value changes some other way.
+    var text by remember { mutableStateOf(formatNumber(value)) }
+    LaunchedEffect(value) {
+        if (text.replace(',', '.').toDoubleOrNull() != value) text = formatNumber(value)
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         OutlinedButton(
-            onClick = { onChange((value - step).coerceIn(range)) },
-            enabled = value > range.first,
+            onClick = { onChange((value - step).coerceIn(min, max)) },
+            enabled = value > min,
             contentPadding = PaddingValues(0.dp),
             modifier = Modifier.size(40.dp)
         ) { Text("−", fontSize = 18.sp) }
-        Text(
-            label(value),
-            modifier = Modifier.widthIn(min = 52.dp),
-            textAlign = TextAlign.Center,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Medium
+        Spacer(Modifier.width(4.dp))
+        OutlinedTextField(
+            value = text,
+            onValueChange = { raw ->
+                val cleaned = cleanNumber(raw, decimal)
+                text = cleaned
+                cleaned.replace(',', '.').toDoubleOrNull()?.let { onChange(it.coerceIn(min, max)) }
+            },
+            singleLine = true,
+            textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center, fontSize = 16.sp),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number
+            ),
+            modifier = Modifier.width(fieldWidth)
         )
+        Spacer(Modifier.width(4.dp))
         OutlinedButton(
-            onClick = { onChange((value + step).coerceIn(range)) },
-            enabled = value < range.last,
+            onClick = { onChange((value + step).coerceIn(min, max)) },
+            enabled = value < max,
             contentPadding = PaddingValues(0.dp),
             modifier = Modifier.size(40.dp)
         ) { Text("+", fontSize = 18.sp) }
     }
+}
+
+/** Digits only, plus one decimal comma when [decimal]; a typed dot becomes a comma. */
+private fun cleanNumber(raw: String, decimal: Boolean): String {
+    val out = StringBuilder()
+    var hasSeparator = false
+    for (c in raw) {
+        if (c.isDigit()) {
+            out.append(c)
+        } else if (decimal && (c == '.' || c == ',') && !hasSeparator) {
+            hasSeparator = true
+            out.append(',')
+        }
+    }
+    return out.toString().take(6)
 }
 
 @Composable
@@ -529,11 +669,12 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
                     Text(timeFormat.format(Date(session.startedAtMillis)), fontSize = 13.sp)
                 }
                 Text(
-                    "${setsLabel(session.repsPerSet.size)} · ${repsLabel(session.totalReps)} · ${formatClock(session.durationMillis)}",
+                    "${setsLabel(session.repsPerSet.size)} · ${repsLabel(session.totalReps)} · ${formatClock(session.durationMillis)}" +
+                        if (session.volumeKg > 0) " · объём ${formatWeight(session.volumeKg)}" else "",
                     fontSize = 14.sp
                 )
                 val marks = buildList {
-                    add("по подходам: ${session.repsPerSet.joinToString(" · ")}")
+                    add("по подходам: ${session.setsLabel}")
                     if (!session.completed) add("остановлено, план ${session.plannedSets} × ${session.plannedReps}")
                 }
                 Text(marks.joinToString(" · "), fontSize = 13.sp)
@@ -562,7 +703,8 @@ private fun StatsCard(title: String, stats: List<ExerciseStats>) {
             for (item in stats) {
                 Text(item.name, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 4.dp))
                 Text(
-                    "${workoutsLabel(item.workouts)} · ${setsLabel(item.sets)} · ${repsLabel(item.reps)}",
+                    "${workoutsLabel(item.workouts)} · ${setsLabel(item.sets)} · ${repsLabel(item.reps)}" +
+                        if (item.volumeKg > 0) " · объём ${formatWeight(item.volumeKg)}" else "",
                     fontSize = 13.sp
                 )
             }

@@ -9,7 +9,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -129,6 +128,12 @@ class MainActivity : ComponentActivity() {
                                     label = { Text("Таймер") }
                                 )
                                 NavigationBarItem(
+                                    selected = route == ROUTE_WORKOUT,
+                                    onClick = { navController.switchTab(ROUTE_WORKOUT) },
+                                    icon = { Text("🏋", fontSize = 18.sp) },
+                                    label = { Text("Тренировка") }
+                                )
+                                NavigationBarItem(
                                     selected = route == ROUTE_REMINDERS,
                                     onClick = { navController.switchTab(ROUTE_REMINDERS) },
                                     icon = { Text("🔔", fontSize = 18.sp) },
@@ -139,12 +144,6 @@ class MainActivity : ComponentActivity() {
                                     onClick = { navController.switchTab(ROUTE_AIRPLANE) },
                                     icon = { Text("✈", fontSize = 18.sp) },
                                     label = { Text("Самолёт") }
-                                )
-                                NavigationBarItem(
-                                    selected = route == ROUTE_WORKOUT,
-                                    onClick = { navController.switchTab(ROUTE_WORKOUT) },
-                                    icon = { Text("🏋", fontSize = 18.sp) },
-                                    label = { Text("Тренировка") }
                                 )
                             }
                         }
@@ -241,19 +240,6 @@ class MainActivity : ComponentActivity() {
         const val ROUTE_AIRPLANE = "airplane"
         const val ROUTE_WORKOUT = "workout"
         const val NEW_REMINDER = "new"
-    }
-
-    /**
-     * Volume down pauses and resumes a workout, so a hand on the bars does not have to reach
-     * for the screen. Volume up keeps adjusting the volume. Only works while this activity is
-     * on screen; with the screen off the system keeps the keys for itself.
-     */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN && WorkoutEngine.state.value.active) {
-            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) WorkoutEngine.togglePause()
-            return true
-        }
-        return super.dispatchKeyEvent(event)
     }
 
     override fun onResume() {
