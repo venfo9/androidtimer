@@ -18,7 +18,8 @@ import androidx.core.app.NotificationCompat
 object TimerCountdownNotifier {
 
     private const val CHANNEL_ID = "timer_countdown_channel"
-    private const val NOTIFICATION_ID = 46
+    /** Also the foreground notification of WalkResetService while it watches a work phase. */
+    const val NOTIFICATION_ID = 46
 
     /** Called from every TimerManager state change; decides show/update/hide from the status. */
     fun sync(context: Context, state: TimerUiState) {
@@ -30,6 +31,12 @@ object TimerCountdownNotifier {
             }
             else -> nm.cancel(NOTIFICATION_ID)
         }
+    }
+
+    /** The countdown notification for [state], channel included, for startForeground. */
+    fun notification(context: Context, state: TimerUiState): Notification {
+        createChannel(context.getSystemService(NotificationManager::class.java))
+        return build(context, state)
     }
 
     private fun build(context: Context, state: TimerUiState): Notification {
@@ -47,7 +54,9 @@ object TimerCountdownNotifier {
         return if (state.status == TimerStatus.RUNNING) {
             builder
                 .setContentTitle(phaseLabel)
-                .setContentText("Идёт отсчёт")
+                .setContentText(
+                    WalkResetService.statusLine.takeIf { state.phase == TimerPhase.WORK } ?: "Идёт отсчёт"
+                )
                 // The system renders and ticks this itself, so no per-second update is needed.
                 .setWhen(state.endTimeMillis)
                 .setUsesChronometer(true)

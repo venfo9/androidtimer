@@ -44,6 +44,10 @@ data class TimerUiState(
         get() = settings.autoStartEnabled && !ringing &&
             ((phase == TimerPhase.WORK && status == TimerStatus.IDLE) ||
                 (phase == TimerPhase.BREAK && status == TimerStatus.FINISHED))
+
+    /** WalkResetService runs while a work phase counts down, paused or ringing excluded. */
+    val watchesWalking: Boolean
+        get() = settings.walkResetEnabled && phase == TimerPhase.WORK && status == TimerStatus.RUNNING
 }
 
 /**
@@ -177,6 +181,37 @@ object TimerManager {
      */
     fun autoStartWork(context: Context) = beginPhase(context, TimerPhase.WORK, autoStarted = true)
 
+    /**
+     * Entry point for WalkResetService: the user walked long enough to have stood up, so the
+     * sitting countdown starts over. The interrupted session ends when the walk began, since
+     * the walking itself was not work.
+     */
+    fun restartWorkAfterWalk(context: Context, walkStartedAtMillis: Long) {
+        val current = _state.value
+        if (current.phase != TimerPhase.WORK || current.status != TimerStatus.RUNNING) return
+        beginPhase(context, TimerPhase.WORK, autoStarted = false, walkStartedAtMillis = walkStartedAtMillis)
+    }
+
+    /**
+     * The walk that restarted work is over. Moves the start of the countdown to the last step,
+     * so the minutes spent walking after the restart do not count as sitting.
+     */
+    fun reanchorWorkAfterWalk(context: Context, lastStepAtMillis: Long) {
+        val current = _state.value
+        if (current.phase != TimerPhase.WORK || current.status != TimerStatus.RUNNING) return
+        val start = lastStepAtMillis.coerceAtMost(System.currentTimeMillis())
+        if (sessionStartedAt != 0L) sessionStartedAt = maxOf(sessionStartedAt, start)
+        update(context) { s ->
+            val end = start + s.settings.workMillis
+            scheduleAlarm(context, end)
+            s.copy(
+                totalMillis = s.settings.workMillis,
+                remainingMillis = (end - System.currentTimeMillis()).coerceAtLeast(0),
+                endTimeMillis = end
+            )
+        }
+    }
+
     fun advancePhaseAndStart(context: Context) {
         val next = if (_state.value.phase == TimerPhase.WORK) TimerPhase.BREAK else TimerPhase.WORK
         beginPhase(context, next, autoStarted = false)
@@ -203,12 +238,14 @@ object TimerManager {
         context: Context,
         phase: TimerPhase,
         autoStarted: Boolean,
-        floorShortSession: Boolean = false
+        floorShortSession: Boolean = false,
+        walkStartedAtMillis: Long? = null
     ) {
         context.stopService(Intent(context, AlarmRingService::class.java))
         closeOpenSession(
             completed = _state.value.status == TimerStatus.FINISHED,
-            flooredToZeroUnderMinute = floorShortSession
+            flooredToZeroUnderMinute = floorShortSession,
+            walkStartedAtMillis = walkStartedAtMillis
         )
         update(context) { s ->
             val total = if (phase == TimerPhase.WORK) s.settings.workMillis else s.settings.breakMillis
@@ -301,11 +338,37 @@ object TimerManager {
         sessionSnoozedMillis = 0L
     }
 
-    private fun closeOpenSession(completed: Boolean, flooredToZeroUnderMinute: Boolean = false) {
+    /**
+     * [walkStartedAtMillis] marks a session cut short by walking: it ends where the walk
+     * began, and is dropped when under a minute of sitting is left, which happens when one
+     * walk follows another.
+     */
+    private fun closeOpenSession(
+        completed: Boolean,
+        flooredToZeroUnderMinute: Boolean = false,
+        walkStartedAtMillis: Long? = null
+    ) {
         val startedAt = sessionStartedAt
         if (startedAt == 0L) return
         val current = _state.value
         sessionStartedAt = 0L
+        if (walkStartedAtMillis != null) {
+            val endedAt = walkStartedAtMillis.coerceIn(startedAt, System.currentTimeMillis())
+            if (endedAt - startedAt < MIN_COUNTABLE_SESSION_MILLIS) return
+            history?.append(
+                SessionRecord(
+                    phase = current.phase,
+                    startedAtMillis = startedAt,
+                    endedAtMillis = endedAt,
+                    plannedMillis = current.phaseDurationMillis,
+                    completed = false,
+                    autoStarted = sessionAutoStarted,
+                    snoozedMillis = sessionSnoozedMillis,
+                    resetByWalking = true
+                )
+            )
+            return
+        }
         val now = System.currentTimeMillis()
         // actualMillis is derived as endedAt - startedAt, so flooring it to zero means
         // recording the end at the start instant rather than storing a separate field.
@@ -359,10 +422,19 @@ object TimerManager {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
-    /** Keeps StepTrackingService running exactly while [TimerUiState.shouldTrackSteps] holds. */
+    /**
+     * Keeps StepTrackingService running exactly while [TimerUiState.shouldTrackSteps] holds,
+     * and WalkResetService while [TimerUiState.watchesWalking] does.
+     */
     private fun reconcileStepTracking(context: Context, state: TimerUiState) {
-        val intent = Intent(context, StepTrackingService::class.java)
-        if (state.shouldTrackSteps && hasActivityRecognitionPermission(context)) {
+        val permitted = hasActivityRecognitionPermission(context)
+        keepServiceRunning(context, StepTrackingService::class.java, state.shouldTrackSteps && permitted)
+        keepServiceRunning(context, WalkResetService::class.java, state.watchesWalking && permitted)
+    }
+
+    private fun keepServiceRunning(context: Context, service: Class<*>, running: Boolean) {
+        val intent = Intent(context, service)
+        if (running) {
             try {
                 ContextCompat.startForegroundService(context, intent)
             } catch (e: Exception) {

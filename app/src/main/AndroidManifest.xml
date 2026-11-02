@@ -65,6 +65,11 @@
             android:foregroundServiceType="mediaPlayback" />
 
         <service
+            android:name=".WalkResetService"
+            android:exported="false"
+            android:foregroundServiceType="health" />
+
+        <service
             android:name=".StepTrackingService"
             android:exported="false"
             android:foregroundServiceType="health" />

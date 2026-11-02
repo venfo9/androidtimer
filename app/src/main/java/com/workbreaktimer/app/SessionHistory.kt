@@ -18,7 +18,9 @@ data class SessionRecord(
     /** True when the phase ran to its alarm; false when it was reset or replaced early. */
     val completed: Boolean,
     val autoStarted: Boolean,
-    val snoozedMillis: Long
+    val snoozedMillis: Long,
+    /** The pedometer saw the user walk, which ended this work session early. */
+    val resetByWalking: Boolean = false
 ) {
     val actualMillis: Long get() = (endedAtMillis - startedAtMillis).coerceAtLeast(0)
 }
@@ -253,7 +255,8 @@ class FileSessionHistoryRepository(context: Context) : SessionHistoryRepository 
                         plannedMillis = item.optLong(F_PLANNED),
                         completed = item.optBoolean(F_COMPLETED),
                         autoStarted = item.optBoolean(F_AUTO),
-                        snoozedMillis = item.optLong(F_SNOOZED)
+                        snoozedMillis = item.optLong(F_SNOOZED),
+                        resetByWalking = item.optBoolean(F_WALK_RESET)
                     )
                 )
             }
@@ -277,6 +280,7 @@ class FileSessionHistoryRepository(context: Context) : SessionHistoryRepository 
                         .put(F_COMPLETED, record.completed)
                         .put(F_AUTO, record.autoStarted)
                         .put(F_SNOOZED, record.snoozedMillis)
+                        .put(F_WALK_RESET, record.resetByWalking)
                 )
             }
             file.writeText(array.toString())
@@ -296,5 +300,6 @@ class FileSessionHistoryRepository(context: Context) : SessionHistoryRepository 
         const val F_COMPLETED = "completed"
         const val F_AUTO = "auto"
         const val F_SNOOZED = "snoozed"
+        const val F_WALK_RESET = "walk_reset"
     }
 }

@@ -78,12 +78,16 @@ class MainActivity : ComponentActivity() {
     private val notifPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
+    /** What the user switched on that needed the permission; applied once it is granted. */
+    private var afterActivityRecognitionGrant: (() -> Unit)? = null
+
     private val activityRecognitionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             activityRecognitionGranted.value = granted
-            // The permission is only ever requested because the user asked for auto-start, and
-            // granting it is what unblocks the health foreground service.
-            if (granted) TimerManager.setAutoStartEnabled(this, true)
+            if (granted) afterActivityRecognitionGrant?.invoke()
+            afterActivityRecognitionGrant = null
+            // Granting it is what unblocks the health foreground services.
+            TimerManager.syncStepTracking(this)
         }
 
     /**
@@ -164,7 +168,7 @@ class MainActivity : ComponentActivity() {
                             composable("settings") {
                                 SettingsScreen(
                                     activityRecognitionGranted = activityRecognitionGranted.value,
-                                    onRequestActivityRecognition = { requestActivityRecognition() },
+                                    onRequestActivityRecognition = { onGranted -> requestActivityRecognition(onGranted) },
                                     onBack = { navController.popBackStack() }
                                 )
                             }
@@ -270,11 +274,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestActivityRecognition() {
+    private fun requestActivityRecognition(onGranted: () -> Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            afterActivityRecognitionGrant = onGranted
             activityRecognitionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
         } else {
-            TimerManager.setAutoStartEnabled(this, true)
+            onGranted()
         }
     }
 
@@ -557,7 +562,7 @@ private fun AlarmStyleSelector(label: String, style: AlarmStyle, onChange: (Alar
 @Composable
 fun SettingsScreen(
     activityRecognitionGranted: Boolean,
-    onRequestActivityRecognition: () -> Unit,
+    onRequestActivityRecognition: (onGranted: () -> Unit) -> Unit,
     onBack: () -> Unit
 ) {
     val state by TimerManager.state.collectAsState()
@@ -626,7 +631,7 @@ fun SettingsScreen(
                 checked = settings.autoStartEnabled,
                 onCheckedChange = { enabled ->
                     if (enabled && !activityRecognitionGranted) {
-                        onRequestActivityRecognition()
+                        onRequestActivityRecognition { TimerManager.setAutoStartEnabled(context, true) }
                     } else {
                         TimerManager.setAutoStartEnabled(context, enabled)
                     }
@@ -640,13 +645,58 @@ fun SettingsScreen(
                 "Нужен доступ к данным о физической активности, иначе шаги не читаются.",
                 textAlign = TextAlign.Center
             )
-            Button(onClick = onRequestActivityRecognition) { Text("Выдать доступ") }
+            Button(onClick = { onRequestActivityRecognition { } }) { Text("Выдать доступ") }
         }
 
         Spacer(Modifier.height(16.dp))
         // Editable whether or not auto-start is on, so the threshold can be dialled in first.
         DurationField("Покой до автозапуска", settings.idleThresholdMillis) { millis ->
             TimerManager.updateSettings(context) { it.copy(idleThresholdMillis = millis) }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        Text("Сброс работы при ходьбе", fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Пока идёт таймер работы, педометр следит за шагами. Если вы ходите дольше " +
+                "заданного времени, таймер работы начинается заново, а телефон коротко вибрирует. " +
+                "Остановки до 15 секунд ходьбу не прерывают. Телефон на столе шагов не видит.",
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(16.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Сбрасывать работу при ходьбе")
+            Spacer(Modifier.width(16.dp))
+            Switch(
+                checked = settings.walkResetEnabled,
+                onCheckedChange = { enabled ->
+                    if (enabled && !activityRecognitionGranted) {
+                        onRequestActivityRecognition {
+                            TimerManager.updateSettings(context) { it.copy(walkResetEnabled = true) }
+                        }
+                    } else {
+                        TimerManager.updateSettings(context) { it.copy(walkResetEnabled = enabled) }
+                    }
+                }
+            )
+        }
+
+        if (settings.walkResetEnabled && !activityRecognitionGranted) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Нужен доступ к данным о физической активности, иначе шаги не читаются.",
+                textAlign = TextAlign.Center
+            )
+            Button(onClick = { onRequestActivityRecognition { } }) { Text("Выдать доступ") }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        DurationField("Длительность ходьбы для сброса", settings.walkResetMillis) { millis ->
+            TimerManager.updateSettings(context) { it.copy(walkResetMillis = millis) }
         }
 
         Spacer(Modifier.height(32.dp))
@@ -801,7 +851,11 @@ fun HistoryScreen(onBack: () -> Unit) {
                         add(timeFormat.format(Date(session.startedAtMillis)))
                         if (session.autoStarted) add("автозапуск")
                         if (session.snoozedMillis > 0) add("снуз ${formatDurationShort(session.snoozedMillis)}")
-                        if (!session.completed) add("прервано")
+                        if (session.resetByWalking) {
+                            add("сброшено ходьбой")
+                        } else if (!session.completed) {
+                            add("прервано")
+                        }
                     }
                     Text(marks.joinToString(" · "), fontSize = 13.sp)
                 }
