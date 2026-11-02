@@ -30,9 +30,13 @@ data class TimerSettings(
     val idleThresholdMillis: Long = DEFAULT_IDLE_MILLIS,
     val snoozeMillis: Long = DEFAULT_SNOOZE_MILLIS,
     val autoStartEnabled: Boolean = false,
-    /** Restart a running work phase when the pedometer sees a walk of [walkResetMillis]. */
+    /** Restart a running work phase every [walkResetSteps] steps taken in one series. */
     val walkResetEnabled: Boolean = false,
-    val walkResetMillis: Long = DEFAULT_WALK_RESET_MILLIS,
+    val walkResetSteps: Int = DEFAULT_WALK_RESET_STEPS,
+    /** A pause without steps longer than this ends a series and clears its count. */
+    val walkGapSeconds: Int = DEFAULT_WALK_GAP_SECONDS,
+    /** Steps the "today" bar on the timer screen fills up to. */
+    val dailyStepGoal: Int = DEFAULT_DAILY_STEP_GOAL,
     val timerAlarmStyle: AlarmStyle = AlarmStyle.FULL_SCREEN,
     val reminderAlarmStyle: AlarmStyle = AlarmStyle.FULL_SCREEN
 ) {
@@ -41,7 +45,9 @@ data class TimerSettings(
         const val DEFAULT_BREAK_MILLIS = 5 * 60_000L
         const val DEFAULT_IDLE_MILLIS = 5 * 60_000L
         const val DEFAULT_SNOOZE_MILLIS = 5 * 60_000L
-        const val DEFAULT_WALK_RESET_MILLIS = 60_000L
+        const val DEFAULT_WALK_RESET_STEPS = 100
+        const val DEFAULT_WALK_GAP_SECONDS = 30
+        const val DEFAULT_DAILY_STEP_GOAL = 10_000
 
         /** Below a few seconds the alarm round-trip dominates; above three hours is a typo. */
         const val MIN_DURATION_MILLIS = 5_000L
@@ -70,7 +76,9 @@ class SettingsStore(context: Context) {
         snoozeMillis = prefs.getLong(KEY_SNOOZE, TimerSettings.DEFAULT_SNOOZE_MILLIS),
         autoStartEnabled = prefs.getBoolean(KEY_AUTO_START, false),
         walkResetEnabled = prefs.getBoolean(KEY_WALK_RESET, false),
-        walkResetMillis = prefs.getLong(KEY_WALK_RESET_DURATION, TimerSettings.DEFAULT_WALK_RESET_MILLIS),
+        walkResetSteps = prefs.getInt(KEY_WALK_RESET_STEPS, TimerSettings.DEFAULT_WALK_RESET_STEPS),
+        walkGapSeconds = prefs.getInt(KEY_WALK_GAP, TimerSettings.DEFAULT_WALK_GAP_SECONDS),
+        dailyStepGoal = prefs.getInt(KEY_STEP_GOAL, TimerSettings.DEFAULT_DAILY_STEP_GOAL),
         timerAlarmStyle = readAlarmStyle(KEY_TIMER_ALARM_STYLE),
         reminderAlarmStyle = readAlarmStyle(KEY_REMINDER_ALARM_STYLE)
     )
@@ -87,7 +95,9 @@ class SettingsStore(context: Context) {
             .putLong(KEY_SNOOZE, settings.snoozeMillis)
             .putBoolean(KEY_AUTO_START, settings.autoStartEnabled)
             .putBoolean(KEY_WALK_RESET, settings.walkResetEnabled)
-            .putLong(KEY_WALK_RESET_DURATION, settings.walkResetMillis)
+            .putInt(KEY_WALK_RESET_STEPS, settings.walkResetSteps)
+            .putInt(KEY_WALK_GAP, settings.walkGapSeconds)
+            .putInt(KEY_STEP_GOAL, settings.dailyStepGoal)
             .putString(KEY_TIMER_ALARM_STYLE, settings.timerAlarmStyle.name)
             .putString(KEY_REMINDER_ALARM_STYLE, settings.reminderAlarmStyle.name)
             .apply()
@@ -101,7 +111,9 @@ class SettingsStore(context: Context) {
         const val KEY_SNOOZE = "snooze_duration"
         const val KEY_AUTO_START = "auto_start_enabled"
         const val KEY_WALK_RESET = "walk_reset_enabled"
-        const val KEY_WALK_RESET_DURATION = "walk_reset_duration"
+        const val KEY_WALK_RESET_STEPS = "walk_reset_steps"
+        const val KEY_WALK_GAP = "walk_gap_seconds"
+        const val KEY_STEP_GOAL = "daily_step_goal"
         const val KEY_TIMER_ALARM_STYLE = "timer_alarm_style"
         const val KEY_REMINDER_ALARM_STYLE = "reminder_alarm_style"
     }

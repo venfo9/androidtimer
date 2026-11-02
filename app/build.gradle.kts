@@ -12,8 +12,8 @@ android {
         minSdk = 26
         targetSdk = 34
         // versionCode = major * 100 + minor, so the next release is just "bump the last digits".
-        versionCode = 124
-        versionName = "1.24"
+        versionCode = 125
+        versionName = "1.25"
     }
 
     signingConfigs {
@@ -78,4 +78,6 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.7.7")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+    // Newer releases need compileSdk 35 or 36; this is the last one that builds against 34.
+    implementation("androidx.health.connect:connect-client:1.1.0-alpha08")
 }

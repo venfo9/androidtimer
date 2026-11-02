@@ -483,6 +483,9 @@ fun TimerScreen(
                     TextButton(onClick = { TimerManager.reset(context) }) { Text("Сброс") }
                 }
             }
+
+            Spacer(Modifier.height(32.dp))
+            StepsPanel()
         }
     }
 }
@@ -535,6 +538,25 @@ private fun DurationField(
             )
         }
     }
+}
+
+/** A whole number typed on the keyboard; values outside [range] are stored clamped. */
+@Composable
+private fun IntSettingField(label: String, value: Int, range: IntRange, onChange: (Int) -> Unit) {
+    // Seeded once and then owned by the field, as in DurationField.
+    var text by remember { mutableStateOf(value.toString()) }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { raw ->
+            text = raw.filter { it.isDigit() }.take(6)
+            text.toIntOrNull()?.let { onChange(it.coerceIn(range)) }
+        },
+        label = { Text(label) },
+        supportingText = { Text("от ${range.first} до ${range.last}") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @Composable
@@ -661,9 +683,10 @@ fun SettingsScreen(
         Text("Сброс работы при ходьбе", fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Пока идёт таймер работы, педометр следит за шагами. Если вы ходите дольше " +
-                "заданного времени, таймер работы начинается заново, а телефон коротко вибрирует. " +
-                "Остановки до 15 секунд ходьбу не прерывают. Телефон на столе шагов не видит.",
+            "Пока идёт таймер работы, педометр считает шаги подряд. Каждый раз, когда серия " +
+                "набирает заданное число шагов, таймер работы начинается заново, а телефон " +
+                "коротко вибрирует. Пауза без шагов дольше заданной обнуляет серию. Телефон " +
+                "на столе шагов не видит.",
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(16.dp))
@@ -695,8 +718,27 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(16.dp))
-        DurationField("Длительность ходьбы для сброса", settings.walkResetMillis) { millis ->
-            TimerManager.updateSettings(context) { it.copy(walkResetMillis = millis) }
+        IntSettingField("Шагов до сброса", settings.walkResetSteps, 10..5_000) { steps ->
+            TimerManager.updateSettings(context) { it.copy(walkResetSteps = steps) }
+        }
+        Spacer(Modifier.height(12.dp))
+        IntSettingField("Пауза, после которой шаги обнуляются, сек", settings.walkGapSeconds, 5..600) { seconds ->
+            TimerManager.updateSettings(context) { it.copy(walkGapSeconds = seconds) }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        Text("Шаги за день", fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Шкала под таймером берёт шаги из Health Connect и заполняется до этой цели.",
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(16.dp))
+        IntSettingField("Цель шагов на день", settings.dailyStepGoal, 100..100_000) { goal ->
+            TimerManager.updateSettings(context) { it.copy(dailyStepGoal = goal) }
         }
 
         Spacer(Modifier.height(32.dp))

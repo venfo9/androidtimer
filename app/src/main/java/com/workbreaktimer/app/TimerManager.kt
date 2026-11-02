@@ -182,7 +182,7 @@ object TimerManager {
     fun autoStartWork(context: Context) = beginPhase(context, TimerPhase.WORK, autoStarted = true)
 
     /**
-     * Entry point for WalkResetService: the user walked long enough to have stood up, so the
+     * Entry point for WalkResetService: the user took enough steps to have stood up, so the
      * sitting countdown starts over. The interrupted session ends when the walk began, since
      * the walking itself was not work.
      */
@@ -190,26 +190,6 @@ object TimerManager {
         val current = _state.value
         if (current.phase != TimerPhase.WORK || current.status != TimerStatus.RUNNING) return
         beginPhase(context, TimerPhase.WORK, autoStarted = false, walkStartedAtMillis = walkStartedAtMillis)
-    }
-
-    /**
-     * The walk that restarted work is over. Moves the start of the countdown to the last step,
-     * so the minutes spent walking after the restart do not count as sitting.
-     */
-    fun reanchorWorkAfterWalk(context: Context, lastStepAtMillis: Long) {
-        val current = _state.value
-        if (current.phase != TimerPhase.WORK || current.status != TimerStatus.RUNNING) return
-        val start = lastStepAtMillis.coerceAtMost(System.currentTimeMillis())
-        if (sessionStartedAt != 0L) sessionStartedAt = maxOf(sessionStartedAt, start)
-        update(context) { s ->
-            val end = start + s.settings.workMillis
-            scheduleAlarm(context, end)
-            s.copy(
-                totalMillis = s.settings.workMillis,
-                remainingMillis = (end - System.currentTimeMillis()).coerceAtLeast(0),
-                endTimeMillis = end
-            )
-        }
     }
 
     fun advancePhaseAndStart(context: Context) {

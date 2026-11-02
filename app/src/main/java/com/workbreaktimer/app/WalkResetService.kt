@@ -14,15 +14,19 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Listens to the pedometer while a work phase runs. A walk that lasts the configured time
- * means the user stood up, so the sitting countdown restarts: once when the walk qualifies,
- * and once more, silently, when it ends, so the new countdown starts from the last step.
+ * Counts steps while a work phase runs. Steps add up into a series while the user keeps
+ * moving; a pause longer than the configured gap clears the series. Every time the series
+ * reaches the configured number of steps, the sitting countdown restarts and the series
+ * starts over, so a long walk keeps resetting the timer.
  *
- * Step times come from the sensor event timestamps rather than delivery time. With the screen
- * off many phones deliver steps in batches, and the timestamps still say when each step
- * happened.
+ * Step times come from the sensor event timestamps rather than delivery time: with the
+ * screen off many phones deliver steps in batches, and the timestamps still say when each
+ * step happened.
  *
  * Shares the countdown notification (TimerCountdownNotifier) as its foreground notification,
  * so a running work phase shows one entry in the shade, not two.
@@ -31,32 +35,31 @@ class WalkResetService : Service(), SensorEventListener {
 
     private var sensorManager: SensorManager? = null
     private val handler = Handler(Looper.getMainLooper())
-    private val walkEndCheck = Runnable { checkWalkEnded() }
+    private val gapCheck = Runnable { checkSeriesEnded() }
 
     /** Fallback for phones without a step detector: the cumulative counter, -1 until read. */
     private var lastCounterValue = -1f
 
-    /** Sensor-clock (elapsed realtime) nanos; -1 when no walk is in progress. */
-    private var walkStartNanos = -1L
+    /** Sensor-clock (elapsed realtime) nanos of the latest step; -1 before the first. */
     private var lastStepNanos = -1L
+    private var seriesStartNanos = -1L
 
-    /** The current walk already restarted the timer. */
-    private var walkTriggered = false
-
-    /** Progress last written to the notification, in [PROGRESS_STEP_SECONDS] buckets. */
-    private var shownProgressBucket = -1L
+    /** Steps last written to the notification, rounded down to [NOTIFICATION_STEP]. */
+    private var shownSteps = -1
 
     companion object {
-        /** Stops shorter than this (a door, a traffic light) do not end a walk. */
-        private const val MAX_GAP_NANOS = 15_000_000_000L
-        private const val MAX_GAP_MILLIS = 15_000L
-        private const val PROGRESS_STEP_SECONDS = 5L
+        private const val NOTIFICATION_STEP = 10
         private val RESET_VIBRATION = longArrayOf(0, 120, 100, 120, 100, 120)
 
         /** Line the countdown notification shows while this service runs; null when stopped. */
         @Volatile
         var statusLine: String? = null
             private set
+
+        private val _seriesSteps = MutableStateFlow(0)
+
+        /** Steps in the current series, for the progress bar on the timer screen. */
+        val seriesSteps: StateFlow<Int> = _seriesSteps.asStateFlow()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -64,7 +67,7 @@ class WalkResetService : Service(), SensorEventListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         TimerManager.init(this)
         val state = TimerManager.state.value
-        if (statusLine == null) statusLine = idleLine()
+        if (statusLine == null) statusLine = progressLine(_seriesSteps.value)
         // Called before any early exit: a service started with startForegroundService has to
         // reach startForeground or the system kills the app.
         startForeground(TimerCountdownNotifier.NOTIFICATION_ID, TimerCountdownNotifier.notification(this, state))
@@ -93,80 +96,67 @@ class WalkResetService : Service(), SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
-            Sensor.TYPE_STEP_DETECTOR -> onStep(event.timestamp)
+            Sensor.TYPE_STEP_DETECTOR -> onSteps(1, event.timestamp)
             Sensor.TYPE_STEP_COUNTER -> {
                 val count = event.values.firstOrNull() ?: return
                 val previous = lastCounterValue
                 lastCounterValue = count
-                // The first reading is the total since boot, a baseline rather than a step.
-                if (previous >= 0f && count > previous) onStep(event.timestamp)
+                // The first reading is the total since boot, a baseline rather than steps.
+                if (previous >= 0f && count > previous) onSteps((count - previous).toInt(), event.timestamp)
             }
         }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
-    private fun onStep(stepNanos: Long) {
-        if (walkStartNanos < 0 || stepNanos - lastStepNanos > MAX_GAP_NANOS) {
-            if (walkTriggered) finishWalk()
-            walkStartNanos = stepNanos
+    private fun onSteps(steps: Int, stepNanos: Long) {
+        val settings = TimerManager.state.value.settings
+        val gapNanos = settings.walkGapSeconds * 1_000_000_000L
+        var series = _seriesSteps.value
+        if (series == 0 || stepNanos - lastStepNanos > gapNanos) {
+            series = 0
+            seriesStartNanos = stepNanos
         }
         lastStepNanos = maxOf(lastStepNanos, stepNanos)
+        series += steps
 
-        val walkedNanos = lastStepNanos - walkStartNanos
-        val thresholdMillis = TimerManager.state.value.settings.walkResetMillis
-        if (!walkTriggered && walkedNanos >= thresholdMillis * 1_000_000L) {
-            walkTriggered = true
+        if (series >= settings.walkResetSteps) {
+            series = 0
             vibrate()
-            TimerManager.restartWorkAfterWalk(this, toWallClock(walkStartNanos))
+            TimerManager.restartWorkAfterWalk(this, toWallClock(seriesStartNanos))
+            // A walk that goes on keeps counting from here toward the next restart.
+            seriesStartNanos = stepNanos
         }
-        showProgress(walkedNanos / 1_000_000_000L, thresholdMillis)
+        publish(series)
 
-        handler.removeCallbacks(walkEndCheck)
-        handler.postDelayed(walkEndCheck, MAX_GAP_MILLIS)
+        handler.removeCallbacks(gapCheck)
+        handler.postDelayed(gapCheck, settings.walkGapSeconds * 1000L)
     }
 
-    /** Runs a gap after the last step; a late batch of steps may still extend the walk. */
-    private fun checkWalkEnded() {
-        if (walkStartNanos < 0) return
-        val sinceLastStepNanos = SystemClock.elapsedRealtimeNanos() - lastStepNanos
-        if (sinceLastStepNanos < MAX_GAP_NANOS) {
-            handler.postDelayed(walkEndCheck, (MAX_GAP_NANOS - sinceLastStepNanos) / 1_000_000L + 1)
+    /** Clears the series once the gap passes with no step; a late batch may still extend it. */
+    private fun checkSeriesEnded() {
+        if (_seriesSteps.value == 0) return
+        val gapNanos = TimerManager.state.value.settings.walkGapSeconds * 1_000_000_000L
+        val sinceLastStep = SystemClock.elapsedRealtimeNanos() - lastStepNanos
+        if (sinceLastStep < gapNanos) {
+            handler.postDelayed(gapCheck, (gapNanos - sinceLastStep) / 1_000_000L + 1)
             return
         }
-        if (walkTriggered) finishWalk()
-        walkStartNanos = -1L
-        walkTriggered = false
-        setStatus(idleLine())
+        publish(0)
     }
 
-    /** The walk that restarted the timer is over: count sitting time from its last step. */
-    private fun finishWalk() {
-        walkTriggered = false
-        TimerManager.reanchorWorkAfterWalk(this, toWallClock(lastStepNanos))
-    }
-
-    private fun showProgress(walkedSeconds: Long, thresholdMillis: Long) {
-        val bucket = if (walkTriggered) Long.MAX_VALUE else walkedSeconds / PROGRESS_STEP_SECONDS
-        if (bucket == shownProgressBucket) return
-        shownProgressBucket = bucket
-        setStatus(
-            if (walkTriggered) {
-                "Ходьба: отсчёт начнётся с последнего шага"
-            } else {
-                "Ходьба ${walkedSeconds} сек из ${formatDurationShort(thresholdMillis)}"
-            }
-        )
-    }
-
-    private fun idleLine(): String {
-        shownProgressBucket = -1L
-        return "Идёт отсчёт · педометр следит"
-    }
-
-    private fun setStatus(line: String) {
-        statusLine = line
+    private fun publish(series: Int) {
+        _seriesSteps.value = series
+        val rounded = series / NOTIFICATION_STEP * NOTIFICATION_STEP
+        if (rounded == shownSteps) return
+        shownSteps = rounded
+        statusLine = progressLine(rounded)
         TimerCountdownNotifier.sync(this, TimerManager.state.value)
+    }
+
+    private fun progressLine(steps: Int): String {
+        val target = TimerManager.state.value.settings.walkResetSteps
+        return if (steps == 0) "Идёт отсчёт · педометр следит" else "Шаги до сброса: $steps из $target"
     }
 
     private fun toWallClock(sensorNanos: Long): Long =
@@ -187,6 +177,7 @@ class WalkResetService : Service(), SensorEventListener {
         sensorManager = null
         handler.removeCallbacksAndMessages(null)
         statusLine = null
+        _seriesSteps.value = 0
         // Removing the foreground notification takes the countdown with it; post it again if
         // the timer is still paused or running without this service.
         stopForeground(STOP_FOREGROUND_REMOVE)
