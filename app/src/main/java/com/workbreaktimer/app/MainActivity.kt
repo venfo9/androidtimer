@@ -215,16 +215,31 @@ class MainActivity : ComponentActivity() {
                             }
                             composable(ROUTE_WORKOUT) {
                                 WorkoutScreen(
-                                    onEditTemplate = { templateId ->
-                                        navController.navigate("workout_template/${templateId ?: NEW_REMINDER}")
+                                    folderId = null,
+                                    onEditTemplate = { templateId, folderId ->
+                                        navController.navigate(workoutTemplateRoute(templateId, folderId))
                                     },
+                                    onOpenFolder = { navController.navigate("workout_folder/$it") },
                                     onOpenHistory = { navController.navigate("workout_history") }
                                 )
                             }
-                            composable("workout_template/{templateId}") { entry ->
+                            composable("workout_folder/{folderId}") { entry ->
+                                WorkoutScreen(
+                                    folderId = entry.arguments?.getString("folderId").orEmpty(),
+                                    onEditTemplate = { templateId, folderId ->
+                                        navController.navigate(workoutTemplateRoute(templateId, folderId))
+                                    },
+                                    onOpenFolder = { navController.navigate("workout_folder/$it") },
+                                    onOpenHistory = { navController.navigate("workout_history") },
+                                    onBack = { navController.popBackStack() }
+                                )
+                            }
+                            composable("workout_template/{templateId}/{folderId}") { entry ->
                                 val templateId = entry.arguments?.getString("templateId")
+                                val folderId = entry.arguments?.getString("folderId")
                                 WorkoutTemplateEditorScreen(
                                     templateId = templateId.takeIf { it != NEW_REMINDER },
+                                    folderId = folderId.takeIf { it != NO_FOLDER },
                                     onDone = { navController.popBackStack() }
                                 )
                             }
@@ -244,6 +259,10 @@ class MainActivity : ComponentActivity() {
         const val ROUTE_AIRPLANE = "airplane"
         const val ROUTE_WORKOUT = "workout"
         const val NEW_REMINDER = "new"
+        const val NO_FOLDER = "none"
+
+        fun workoutTemplateRoute(templateId: String?, folderId: String?) =
+            "workout_template/${templateId ?: NEW_REMINDER}/${folderId ?: NO_FOLDER}"
     }
 
     override fun onResume() {

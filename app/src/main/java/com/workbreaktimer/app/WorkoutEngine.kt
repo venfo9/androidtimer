@@ -216,7 +216,8 @@ object WorkoutEngine {
             repsPerSet = kept.map { current.repsPerSet[it] },
             weightsPerSet = kept.map { current.weightsPerSet.getOrElse(it) { 0.0 } },
             plannedRepsPerSet = template.setPlans.map { it.reps },
-            completed = current.completed
+            completed = current.completed,
+            folderId = template.folderId
         )
         val context = appContext
         if (session != null && context != null) WorkoutStore.addSession(context, session)

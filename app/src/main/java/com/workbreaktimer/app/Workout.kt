@@ -13,6 +13,9 @@ import java.util.UUID
 /** One part of a repetition, e.g. "Вниз" for 3 seconds. */
 data class WorkoutPhase(val name: String, val seconds: Int)
 
+/** A group of exercises on the workout tab, e.g. "День ног". */
+data class WorkoutFolder(val id: String, val name: String)
+
 /** One planned set: how many repetitions, with how many kilograms (0 means body weight). */
 data class SetPlan(val reps: Int, val weightKg: Double = 0.0)
 
@@ -25,7 +28,9 @@ data class WorkoutTemplate(
     val setPlans: List<SetPlan>,
     val restSeconds: Int,
     /** Rest runs without a timer and the next set waits for the user's button. */
-    val manualNextSet: Boolean = false
+    val manualNextSet: Boolean = false,
+    /** Folder on the workout tab; null keeps the exercise at the top level. */
+    val folderId: String? = null
 ) {
     /** "3-1-1", the way tempo is written in training plans. */
     val tempoLabel: String get() = phases.joinToString("-") { it.seconds.toString() }
@@ -66,7 +71,9 @@ data class WorkoutSession(
     /** Repetitions the template planned for each of its sets. */
     val plannedRepsPerSet: List<Int>,
     /** False when the user stopped before the last set ended. */
-    val completed: Boolean
+    val completed: Boolean,
+    /** Folder the exercise was in when the workout was saved, for filtering the history. */
+    val folderId: String? = null
 ) {
     val totalReps: Int get() = repsPerSet.sum()
 
@@ -92,10 +99,16 @@ data class WorkoutSession(
 data class ExerciseStats(val name: String, val workouts: Int, val sets: Int, val reps: Int, val volumeKg: Double)
 
 data class WorkoutData(
+    val folders: List<WorkoutFolder> = emptyList(),
+    /** In display order; moving an exercise up or down reorders this list. */
     val templates: List<WorkoutTemplate> = emptyList(),
     val sessions: List<WorkoutSession> = emptyList()
 ) {
     fun template(id: String): WorkoutTemplate? = templates.firstOrNull { it.id == id }
+
+    fun folder(id: String): WorkoutFolder? = folders.firstOrNull { it.id == id }
+
+    fun templatesIn(folderId: String?): List<WorkoutTemplate> = templates.filter { it.folderId == folderId }
 }
 
 /** Exercise templates and workout history, kept in one JSON file. */
@@ -124,7 +137,8 @@ object WorkoutStore {
         }
     }
 
-    fun newTemplateDraft(): WorkoutTemplate = defaultTemplate().copy(id = UUID.randomUUID().toString(), name = "")
+    fun newTemplateDraft(folderId: String?): WorkoutTemplate =
+        defaultTemplate().copy(id = UUID.randomUUID().toString(), name = "", folderId = folderId)
 
     fun saveTemplate(context: Context, template: WorkoutTemplate) {
         init(context)
@@ -143,6 +157,65 @@ object WorkoutStore {
         commit(current.copy(templates = current.templates.filterNot { it.id == id }))
     }
 
+    /** A copy named "… (копия)", placed right under the original. */
+    fun duplicateTemplate(context: Context, id: String) {
+        init(context)
+        val current = _state.value
+        val index = current.templates.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val original = current.templates[index]
+        val copy = original.copy(id = UUID.randomUUID().toString(), name = "${original.name} (копия)")
+        commit(current.copy(templates = current.templates.toMutableList().also { it.add(index + 1, copy) }))
+    }
+
+    /** Swaps an exercise with its neighbour in the same folder; [delta] is -1 for up, 1 for down. */
+    fun moveTemplate(context: Context, id: String, delta: Int) {
+        init(context)
+        val current = _state.value
+        val template = current.template(id) ?: return
+        val siblings = current.templatesIn(template.folderId)
+        val target = siblings.getOrNull(siblings.indexOf(template) + delta) ?: return
+        val list = current.templates.toMutableList()
+        val a = list.indexOf(template)
+        val b = list.indexOf(target)
+        list[a] = target
+        list[b] = template
+        commit(current.copy(templates = list))
+    }
+
+    /** Puts an exercise into a folder, or to the top level with null, at the end of the list. */
+    fun setTemplateFolder(context: Context, id: String, folderId: String?) {
+        init(context)
+        val current = _state.value
+        val template = current.template(id) ?: return
+        commit(current.copy(templates = current.templates.filterNot { it.id == id } + template.copy(folderId = folderId)))
+    }
+
+    fun addFolder(context: Context, name: String) {
+        init(context)
+        val current = _state.value
+        commit(current.copy(folders = current.folders + WorkoutFolder(UUID.randomUUID().toString(), name)))
+    }
+
+    fun renameFolder(context: Context, id: String, name: String) {
+        init(context)
+        val current = _state.value
+        commit(current.copy(folders = current.folders.map { if (it.id == id) it.copy(name = name) else it }))
+    }
+
+    /** Exercises of a deleted folder move to the top level; its history stays under "Все". */
+    fun deleteFolder(context: Context, id: String) {
+        init(context)
+        val current = _state.value
+        commit(
+            current.copy(
+                folders = current.folders.filterNot { it.id == id },
+                templates = current.templates.map { if (it.folderId == id) it.copy(folderId = null) else it },
+                sessions = current.sessions.map { if (it.folderId == id) it.copy(folderId = null) else it }
+            )
+        )
+    }
+
     fun addSession(context: Context, session: WorkoutSession) {
         init(context)
         val current = _state.value
@@ -155,9 +228,9 @@ object WorkoutStore {
         commit(current.copy(sessions = current.sessions.filterNot { it.id == id }))
     }
 
-    /** Totals per exercise name for sessions started at or after [sinceMillis]. */
-    fun stats(sinceMillis: Long): List<ExerciseStats> =
-        _state.value.sessions
+    /** Totals per exercise name for [sessions] started at or after [sinceMillis]. */
+    fun stats(sessions: List<WorkoutSession>, sinceMillis: Long): List<ExerciseStats> =
+        sessions
             .filter { it.startedAtMillis >= sinceMillis }
             .groupBy { it.name }
             .map { (name, sessions) ->
@@ -204,6 +277,7 @@ object WorkoutStore {
                         .put("set_plans", setPlans)
                         .put("rest", template.restSeconds)
                         .put("manual_next", template.manualNextSet)
+                        .put("folder", template.folderId ?: "")
                 )
             }
             val sessions = JSONArray()
@@ -224,9 +298,14 @@ object WorkoutStore {
                         .put("weights_per_set", weights)
                         .put("planned_reps_per_set", planned)
                         .put("completed", session.completed)
+                        .put("folder", session.folderId ?: "")
                 )
             }
-            target.writeText(JSONObject().put("templates", templates).put("sessions", sessions).toString())
+            val folders = JSONArray()
+            newState.folders.forEach { folders.put(JSONObject().put("id", it.id).put("name", it.name)) }
+            target.writeText(
+                JSONObject().put("folders", folders).put("templates", templates).put("sessions", sessions).toString()
+            )
         } catch (e: Exception) {
             // Unwritable storage; the in-memory state still serves this session.
         }
@@ -249,7 +328,8 @@ object WorkoutStore {
                 phases = phases,
                 setPlans = readSetPlans(item),
                 restSeconds = item.optInt("rest", 90).coerceAtLeast(0),
-                manualNextSet = item.optBoolean("manual_next", false)
+                manualNextSet = item.optBoolean("manual_next", false),
+                folderId = item.optString("folder").ifEmpty { null }
             )
         }
         val sessionArray = root.optJSONArray("sessions") ?: JSONArray()
@@ -268,10 +348,21 @@ object WorkoutStore {
                     ?.let { array -> (0 until array.length()).map { array.optInt(it) } }
                     // Saved before sets could differ: one count for a number of sets.
                     ?: List(item.optInt("planned_sets")) { item.optInt("planned_reps") },
-                completed = item.optBoolean("completed")
+                completed = item.optBoolean("completed"),
+                folderId = if (item.has("folder")) {
+                    item.optString("folder").ifEmpty { null }
+                } else {
+                    // Saved before folders existed: file it where its exercise is now.
+                    templates.firstOrNull { it.name == item.optString("name") }?.folderId
+                }
             )
         }
-        WorkoutData(templates, sessions)
+        val folderArray = root.optJSONArray("folders") ?: JSONArray()
+        val folders = (0 until folderArray.length()).mapNotNull { i ->
+            val item = folderArray.optJSONObject(i) ?: return@mapNotNull null
+            WorkoutFolder(item.optString("id"), item.optString("name"))
+        }
+        WorkoutData(folders, templates, sessions)
     } catch (e: Exception) {
         // A corrupt file must not take the app down.
         WorkoutData()

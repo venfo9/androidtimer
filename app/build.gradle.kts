@@ -12,8 +12,8 @@ android {
         minSdk = 26
         targetSdk = 34
         // versionCode = major * 100 + minor, so the next release is just "bump the last digits".
-        versionCode = 126
-        versionName = "1.26"
+        versionCode = 127
+        versionName = "1.27"
     }
 
     signingConfigs {

@@ -1,6 +1,9 @@
 package com.workbreaktimer.app
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +22,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +63,10 @@ private val PHASE_COLORS = listOf(
 private val REST_COLOR = Color(0xFF64748B)
 
 private const val DAY_MILLIS = 24 * 60 * 60 * 1000L
+
+/** History filter values besides a folder id; neither can collide with a UUID. */
+private const val ALL_FOLDERS = "*"
+private const val NO_FOLDER = ""
 
 /** Russian noun form for [n]: 1 подход, 2 подхода, 5 подходов. */
 private fun plural(n: Int, one: String, few: String, many: String): String {
@@ -99,14 +109,28 @@ private fun templateWeightLabel(template: WorkoutTemplate): String? {
     }
 }
 
+/**
+ * The exercise list: the top level with its folders, or the inside of one folder when
+ * [folderId] is set. A running workout or its review takes over either one.
+ */
 @Composable
-fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) {
+fun WorkoutScreen(
+    folderId: String?,
+    onEditTemplate: (templateId: String?, folderId: String?) -> Unit,
+    onOpenFolder: (String) -> Unit,
+    onOpenHistory: () -> Unit,
+    onBack: () -> Unit = {}
+) {
     val context = LocalContext.current
     // Loads text-to-speech while the user picks an exercise, so the countdown is not cut short.
     remember { WorkoutEngine.prepare(context) }
     val run by WorkoutEngine.state.collectAsState()
     val voice by WorkoutEngine.voiceStatus.collectAsState()
     val data by WorkoutStore.state.collectAsState()
+    val folder = folderId?.let { data.folder(it) }
+    var newFolder by remember { mutableStateOf(false) }
+    var renameFolder by remember { mutableStateOf(false) }
+    var confirmDeleteFolder by remember { mutableStateOf(false) }
 
     // The screen stays on during a workout so the numbers stay readable on the bars. The power
     // button still turns it off, and the workout carries on in the background.
@@ -132,8 +156,20 @@ fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) 
             .padding(24.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Тренировка", fontSize = 22.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+            Text(
+                folder?.name ?: "Тренировка",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
             TextButton(onClick = onOpenHistory) { Text("История") }
+        }
+        if (folder != null) {
+            Row {
+                TextButton(onClick = onBack) { Text("← Назад") }
+                TextButton(onClick = { renameFolder = true }) { Text("Переименовать") }
+                TextButton(onClick = { confirmDeleteFolder = true }) { Text("Удалить") }
+            }
         }
         Spacer(Modifier.height(16.dp))
 
@@ -154,37 +190,46 @@ fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) 
             Spacer(Modifier.height(16.dp))
         }
 
-        if (data.templates.isEmpty()) {
-            Text("Упражнений пока нет.")
-        }
-        for (template in data.templates) {
-            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(template.name, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Темп ${template.tempoLabel} · ${templateSetsLabel(template)}",
-                        fontSize = 13.sp
-                    )
-                    Text(
-                        template.phases.joinToString(" → ") { "${it.name} ${it.seconds} с" } +
-                            " · ${templateRestLabel(template)}",
-                        fontSize = 13.sp
-                    )
-                    templateWeightLabel(template)?.let { Text(it, fontSize = 13.sp) }
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = {
-                            WorkoutEngine.dismissSummary()
-                            WorkoutEngine.start(context, template)
-                        }) { Text("Старт") }
-                        OutlinedButton(onClick = { onEditTemplate(template.id) }) { Text("Изменить") }
+        if (folderId == null) {
+            for (item in data.folders) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                        .clickable { onOpenFolder(item.id) }
+                ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("📁  ${item.name}", fontSize = 18.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                        Text(exercisesLabel(data.templatesIn(item.id).size), fontSize = 13.sp)
                     }
                 }
             }
         }
+
+        val templates = data.templatesIn(folderId)
+        if (templates.isEmpty()) {
+            Text(if (folderId == null && data.folders.isNotEmpty()) "Вне папок упражнений нет." else "Упражнений пока нет.")
+        }
+        templates.forEachIndexed { index, template ->
+            TemplateCard(
+                template = template,
+                folders = data.folders,
+                isFirst = index == 0,
+                isLast = index == templates.lastIndex,
+                onStart = {
+                    WorkoutEngine.dismissSummary()
+                    WorkoutEngine.start(context, template)
+                },
+                onEdit = { onEditTemplate(template.id, folderId) }
+            )
+        }
         Spacer(Modifier.height(16.dp))
-        Button(onClick = { onEditTemplate(null) }) { Text("Добавить упражнение") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { onEditTemplate(null, folderId) }) { Text("Добавить упражнение") }
+            if (folderId == null) {
+                OutlinedButton(onClick = { newFolder = true }) { Text("Новая папка") }
+            }
+        }
 
         Spacer(Modifier.height(24.dp))
         Text(
@@ -192,6 +237,155 @@ fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) 
                 "с отсчёта 3 секунды.",
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    if (newFolder) {
+        FolderNameDialog(title = "Новая папка", initial = "", onDismiss = { newFolder = false }) { name ->
+            WorkoutStore.addFolder(context, name)
+            newFolder = false
+        }
+    }
+    if (renameFolder && folder != null) {
+        FolderNameDialog(title = "Название папки", initial = folder.name, onDismiss = { renameFolder = false }) { name ->
+            WorkoutStore.renameFolder(context, folder.id, name)
+            renameFolder = false
+        }
+    }
+    if (confirmDeleteFolder && folder != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteFolder = false },
+            title = { Text("Удалить папку «${folder.name}»?") },
+            text = { Text("Упражнения из неё переедут в общий список, история останется.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDeleteFolder = false
+                    WorkoutStore.deleteFolder(context, folder.id)
+                    onBack()
+                }) { Text("Удалить") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteFolder = false }) { Text("Отмена") } }
+        )
+    }
+}
+
+private fun exercisesLabel(n: Int) = plural(n, "упражнение", "упражнения", "упражнений")
+
+@Composable
+private fun FolderNameDialog(title: String, initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var name by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it.take(40) },
+                placeholder = { Text("Например, День ног") },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(name.trim().ifEmpty { "Папка" }) }) { Text("Сохранить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
+}
+
+@Composable
+private fun TemplateCard(
+    template: WorkoutTemplate,
+    folders: List<WorkoutFolder>,
+    isFirst: Boolean,
+    isLast: Boolean,
+    onStart: () -> Unit,
+    onEdit: () -> Unit
+) {
+    val context = LocalContext.current
+    var menuOpen by remember { mutableStateOf(false) }
+    var pickFolder by remember { mutableStateOf(false) }
+
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Column(modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(template.name, fontSize = 18.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                Box {
+                    TextButton(onClick = { menuOpen = true }) { Text("⋮", fontSize = 20.sp) }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Дублировать") },
+                            onClick = {
+                                menuOpen = false
+                                WorkoutStore.duplicateTemplate(context, template.id)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Выше") },
+                            enabled = !isFirst,
+                            onClick = {
+                                menuOpen = false
+                                WorkoutStore.moveTemplate(context, template.id, -1)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Ниже") },
+                            enabled = !isLast,
+                            onClick = {
+                                menuOpen = false
+                                WorkoutStore.moveTemplate(context, template.id, 1)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Переместить в папку…") },
+                            enabled = folders.isNotEmpty(),
+                            onClick = {
+                                menuOpen = false
+                                pickFolder = true
+                            }
+                        )
+                    }
+                }
+            }
+            Text("Темп ${template.tempoLabel} · ${templateSetsLabel(template)}", fontSize = 13.sp)
+            Text(
+                template.phases.joinToString(" → ") { "${it.name} ${it.seconds} с" } +
+                    " · ${templateRestLabel(template)}",
+                fontSize = 13.sp
+            )
+            templateWeightLabel(template)?.let { Text(it, fontSize = 13.sp) }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onStart) { Text("Старт") }
+                OutlinedButton(onClick = onEdit) { Text("Изменить") }
+            }
+        }
+    }
+
+    if (pickFolder) {
+        AlertDialog(
+            onDismissRequest = { pickFolder = false },
+            title = { Text("Переместить «${template.name}»") },
+            text = {
+                Column {
+                    val choices = listOf<WorkoutFolder?>(null) + folders
+                    for (choice in choices) {
+                        val current = choice?.id == template.folderId
+                        TextButton(
+                            onClick = {
+                                pickFolder = false
+                                if (!current) WorkoutStore.setTemplateFolder(context, template.id, choice?.id)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                (choice?.name ?: "Без папки") + if (current) "  ✓" else "",
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { pickFolder = false }) { Text("Отмена") } }
         )
     }
 }
@@ -490,12 +684,12 @@ private fun WorkoutReview(run: WorkoutRunState) {
 }
 
 @Composable
-fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
+fun WorkoutTemplateEditorScreen(templateId: String?, folderId: String?, onDone: () -> Unit) {
     val context = LocalContext.current
     val data by WorkoutStore.state.collectAsState()
     val existing = templateId?.let { data.template(it) }
     // Seeded once; the editor owns its draft until the user saves.
-    val initial = remember { existing ?: WorkoutStore.newTemplateDraft() }
+    val initial = remember { existing ?: WorkoutStore.newTemplateDraft(folderId) }
 
     var name by remember { mutableStateOf(initial.name) }
     var phases by remember { mutableStateOf(initial.phases) }
@@ -799,8 +993,17 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val data by WorkoutStore.state.collectAsState()
     val now = remember { System.currentTimeMillis() }
-    val week = remember(data) { WorkoutStore.stats(now - 7 * DAY_MILLIS) }
-    val month = remember(data) { WorkoutStore.stats(now - 30 * DAY_MILLIS) }
+    // ALL_FOLDERS, NO_FOLDER, or a folder id.
+    var filter by remember { mutableStateOf(ALL_FOLDERS) }
+    val sessions = remember(data, filter) {
+        when (filter) {
+            ALL_FOLDERS -> data.sessions
+            NO_FOLDER -> data.sessions.filter { it.folderId == null }
+            else -> data.sessions.filter { it.folderId == filter }
+        }
+    }
+    val week = remember(sessions) { WorkoutStore.stats(sessions, now - 7 * DAY_MILLIS) }
+    val month = remember(sessions) { WorkoutStore.stats(sessions, now - 30 * DAY_MILLIS) }
     val timeFormat = remember { SimpleDateFormat("d MMM, HH:mm", Locale("ru")) }
 
     Column(
@@ -812,6 +1015,27 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
         Text("История тренировок", fontSize = 22.sp, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(16.dp))
 
+        if (data.folders.isNotEmpty()) {
+            val options = listOf(ALL_FOLDERS to "Все") + data.folders.map { it.id to it.name } +
+                (NO_FOLDER to "Без папки")
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for ((key, label) in options) {
+                    OutlinedButton(
+                        onClick = { filter = key },
+                        border = if (key == filter) {
+                            BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                        } else {
+                            ButtonDefaults.outlinedButtonBorder
+                        }
+                    ) { Text(label, fontSize = 13.sp) }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
         StatsCard("За 7 дней", week)
         Spacer(Modifier.height(12.dp))
         StatsCard("За 30 дней", month)
@@ -820,11 +1044,11 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
         HorizontalDivider()
         Spacer(Modifier.height(8.dp))
 
-        if (data.sessions.isEmpty()) {
+        if (sessions.isEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text("Пока пусто. Завершите первую тренировку, и она появится здесь.")
         }
-        for (session in data.sessions.take(200)) {
+        for (session in sessions.take(200)) {
             Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(session.name, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
