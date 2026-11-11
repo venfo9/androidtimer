@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 
-enum class WorkoutStage { IDLE, COUNTDOWN, WORK, REST, PAUSED, FINISHED }
+enum class WorkoutStage { IDLE, COUNTDOWN, WORK, REST, PAUSED, REVIEW, FINISHED }
 
 data class WorkoutRunState(
     val stage: WorkoutStage = WorkoutStage.IDLE,
@@ -21,11 +21,17 @@ data class WorkoutRunState(
     val secondInPhase: Int = 0,
     val countdown: Int = 0,
     val restLeft: Int = 0,
+    /** Seconds of rest so far, shown when the next set waits for the user's button. */
+    val restElapsed: Int = 0,
     val pausedFrom: WorkoutStage? = null,
     val repsPerSet: List<Int> = emptyList(),
     /** Kilograms per set; starts from the template and the user can change it on the go. */
     val weightsPerSet: List<Double> = emptyList(),
     val startedAtMillis: Long = 0,
+    /** When the last set ended; fixed at REVIEW so time spent checking the numbers is not counted. */
+    val endedAtMillis: Long = 0,
+    /** At REVIEW: all planned sets were done, rather than stopped early. */
+    val completed: Boolean = false,
     /** What went into the history; set once the workout is FINISHED, null if nothing was done. */
     val summary: WorkoutSession? = null
 ) {
@@ -36,6 +42,9 @@ data class WorkoutRunState(
     val repsInCurrentSet: Int get() = repsPerSet.getOrElse(setIndex) { 0 }
 
     val weightOfCurrentSet: Double get() = weightsPerSet.getOrElse(setIndex) { 0.0 }
+
+    /** The rest has no timer and waits for "next set". */
+    val manualRest: Boolean get() = template?.manualNextSet == true
 
     /** The stage the screen should describe; a pause keeps showing where it stopped. */
     val shownStage: WorkoutStage get() = if (stage == WorkoutStage.PAUSED) pausedFrom ?: stage else stage
@@ -171,10 +180,51 @@ object WorkoutEngine {
         publish(current.copy(weightsPerSet = weights))
     }
 
-    /** Ends early and keeps what was done. */
+    /**
+     * Fixes the numbers of a set after the fact: during rest for the set just done, and at
+     * REVIEW for any set. The engine counts repetitions of the tempo, not what the user lifted.
+     */
+    fun correctSet(index: Int, reps: Int, weightKg: Double) {
+        val current = _state.value
+        if (!current.active && current.stage != WorkoutStage.REVIEW) return
+        if (index !in current.repsPerSet.indices) return
+        publish(
+            current.copy(
+                repsPerSet = current.repsPerSet.toMutableList().also { it[index] = reps.coerceAtLeast(0) },
+                weightsPerSet = current.weightsPerSet.toMutableList().also { it[index] = weightKg }
+            )
+        )
+    }
+
+    /** Ends early; what was done goes to REVIEW like a finished workout. */
     fun finish() {
         if (!_state.value.active) return
         conclude(_state.value, completed = false)
+    }
+
+    /** Writes the reviewed sets to the history. Sets left at zero repetitions are dropped. */
+    fun saveReview() {
+        val current = _state.value
+        val template = current.template ?: return
+        if (current.stage != WorkoutStage.REVIEW) return
+        val kept = current.repsPerSet.indices.filter { current.repsPerSet[it] > 0 }
+        val session = if (kept.isEmpty()) null else WorkoutSession(
+            id = UUID.randomUUID().toString(),
+            name = template.name,
+            startedAtMillis = current.startedAtMillis,
+            durationMillis = current.endedAtMillis - current.startedAtMillis,
+            repsPerSet = kept.map { current.repsPerSet[it] },
+            weightsPerSet = kept.map { current.weightsPerSet.getOrElse(it) { 0.0 } },
+            plannedRepsPerSet = template.setPlans.map { it.reps },
+            completed = current.completed
+        )
+        val context = appContext
+        if (session != null && context != null) WorkoutStore.addSession(context, session)
+        publish(current.copy(stage = WorkoutStage.FINISHED, summary = session))
+    }
+
+    fun discardReview() {
+        if (_state.value.stage == WorkoutStage.REVIEW) publish(WorkoutRunState())
     }
 
     /** Throws the workout away without saving it. */
@@ -223,7 +273,9 @@ object WorkoutEngine {
                     publish(current.copy(phaseIndex = phase, secondInPhase = second))
                 }
             }
-            WorkoutStage.REST -> {
+            WorkoutStage.REST -> if (current.manualRest) {
+                publish(current.copy(restElapsed = current.restElapsed + 1))
+            } else {
                 val left = current.restLeft - 1
                 if (left <= 0) {
                     startRep(current.copy(restLeft = 0))
@@ -258,7 +310,7 @@ object WorkoutEngine {
         val reps = current.repsPerSet.toMutableList()
         reps[current.setIndex] = reps[current.setIndex] + 1
         val updated = current.copy(repsPerSet = reps)
-        if (reps[current.setIndex] < template.reps) {
+        if (reps[current.setIndex] < template.repsForSet(current.setIndex)) {
             startRep(updated)
             return
         }
@@ -267,8 +319,11 @@ object WorkoutEngine {
             return
         }
         voice?.tone(WorkoutVoice.Tone.SET)
-        val next = updated.copy(setIndex = current.setIndex + 1, phaseIndex = 0, secondInPhase = 0)
-        if (template.restSeconds > 0) {
+        val next = updated.copy(setIndex = current.setIndex + 1, phaseIndex = 0, secondInPhase = 0, restElapsed = 0)
+        if (template.manualNextSet) {
+            voice?.releaseFocus()
+            publish(next.copy(stage = WorkoutStage.REST, restLeft = 0))
+        } else if (template.restSeconds > 0) {
             voice?.releaseFocus()
             publish(next.copy(stage = WorkoutStage.REST, restLeft = template.restSeconds))
         } else {
@@ -278,30 +333,30 @@ object WorkoutEngine {
 
     // endregion
 
+    /**
+     * Stops the beats and hands the sets over for review. Sets that never started say nothing
+     * about the workout, so they are left out of it.
+     */
     private fun conclude(current: WorkoutRunState, completed: Boolean) {
-        val template = current.template ?: return
         stopSound()
         if (completed) voice?.tone(WorkoutVoice.Tone.DONE)
-        // Sets that never started say nothing about the workout and only clutter the history.
         val kept = current.repsPerSet.indices.filter { index -> current.repsPerSet[index] > 0 || index < current.setIndex }
-        val repsPerSet = kept.map { current.repsPerSet[it] }
-        val session = if (repsPerSet.sum() > 0) {
-            WorkoutSession(
-                id = UUID.randomUUID().toString(),
-                name = template.name,
-                startedAtMillis = current.startedAtMillis,
-                durationMillis = System.currentTimeMillis() - current.startedAtMillis,
-                repsPerSet = repsPerSet,
-                weightsPerSet = kept.map { current.weightsPerSet.getOrElse(it) { 0.0 } },
-                plannedReps = template.reps,
-                plannedSets = template.sets,
-                completed = completed
-            )
-        } else null
-        val context = appContext
-        if (session != null && context != null) WorkoutStore.addSession(context, session)
-        publish(current.copy(stage = WorkoutStage.FINISHED, pausedFrom = null, summary = session))
-        context?.let { WorkoutService.stop(it) }
+        val reps = kept.map { current.repsPerSet[it] }
+        publish(
+            if (reps.sum() == 0) {
+                current.copy(stage = WorkoutStage.FINISHED, pausedFrom = null, summary = null)
+            } else {
+                current.copy(
+                    stage = WorkoutStage.REVIEW,
+                    pausedFrom = null,
+                    repsPerSet = reps,
+                    weightsPerSet = kept.map { current.weightsPerSet.getOrElse(it) { 0.0 } },
+                    endedAtMillis = System.currentTimeMillis(),
+                    completed = completed
+                )
+            }
+        )
+        appContext?.let { WorkoutService.stop(it) }
     }
 
     private fun stopSound() {

@@ -13,23 +13,28 @@ import java.util.UUID
 /** One part of a repetition, e.g. "Вниз" for 3 seconds. */
 data class WorkoutPhase(val name: String, val seconds: Int)
 
-/** A saved exercise: the tempo of one repetition and how many of them to do. */
+/** One planned set: how many repetitions, with how many kilograms (0 means body weight). */
+data class SetPlan(val reps: Int, val weightKg: Double = 0.0)
+
+/** A saved exercise: the tempo of one repetition and the sets to do. */
 data class WorkoutTemplate(
     val id: String,
     val name: String,
     val phases: List<WorkoutPhase>,
-    val reps: Int,
-    val sets: Int,
+    /** Sets in order, each with its own reps and weight. Never empty. */
+    val setPlans: List<SetPlan>,
     val restSeconds: Int,
-    /** Kilograms for every set; 0 means body weight only. */
-    val weightKg: Double = 0.0,
-    /** A weight per set when they differ, e.g. a pyramid; null when [weightKg] applies to all. */
-    val setWeights: List<Double>? = null
+    /** Rest runs without a timer and the next set waits for the user's button. */
+    val manualNextSet: Boolean = false
 ) {
     /** "3-1-1", the way tempo is written in training plans. */
     val tempoLabel: String get() = phases.joinToString("-") { it.seconds.toString() }
 
-    fun weightForSet(index: Int): Double = setWeights?.getOrNull(index) ?: weightKg
+    val sets: Int get() = setPlans.size
+
+    fun repsForSet(index: Int): Int = setPlans.getOrElse(index) { setPlans.last() }.reps
+
+    fun weightForSet(index: Int): Double = setPlans.getOrElse(index) { setPlans.last() }.weightKg
 
     companion object {
         const val MAX_PHASES = 5
@@ -58,12 +63,14 @@ data class WorkoutSession(
     val repsPerSet: List<Int>,
     /** Kilograms of each set in [repsPerSet]; empty for sessions saved before weights existed. */
     val weightsPerSet: List<Double>,
-    val plannedReps: Int,
-    val plannedSets: Int,
+    /** Repetitions the template planned for each of its sets. */
+    val plannedRepsPerSet: List<Int>,
     /** False when the user stopped before the last set ended. */
     val completed: Boolean
 ) {
     val totalReps: Int get() = repsPerSet.sum()
+
+    val plannedLabel: String get() = plannedRepsPerSet.joinToString(" · ")
 
     fun weightOfSet(index: Int): Double = weightsPerSet.getOrElse(index) { 0.0 }
 
@@ -172,8 +179,7 @@ object WorkoutStore {
             WorkoutPhase("Пауза", 1),
             WorkoutPhase("Вверх", 1)
         ),
-        reps = 10,
-        sets = 3,
+        setPlans = List(3) { SetPlan(reps = 10) },
         restSeconds = 90
     )
 
@@ -188,20 +194,16 @@ object WorkoutStore {
             for (template in newState.templates) {
                 val phases = JSONArray()
                 template.phases.forEach { phases.put(JSONObject().put("name", it.name).put("seconds", it.seconds)) }
+                val setPlans = JSONArray()
+                template.setPlans.forEach { setPlans.put(JSONObject().put("reps", it.reps).put("weight", it.weightKg)) }
                 templates.put(
                     JSONObject()
                         .put("id", template.id)
                         .put("name", template.name)
                         .put("phases", phases)
-                        .put("reps", template.reps)
-                        .put("sets", template.sets)
+                        .put("set_plans", setPlans)
                         .put("rest", template.restSeconds)
-                        .put("weight", template.weightKg)
-                        .also { json ->
-                            template.setWeights?.let { weights ->
-                                json.put("set_weights", JSONArray().also { array -> weights.forEach { array.put(it) } })
-                            }
-                        }
+                        .put("manual_next", template.manualNextSet)
                 )
             }
             val sessions = JSONArray()
@@ -210,6 +212,8 @@ object WorkoutStore {
                 session.repsPerSet.forEach { reps.put(it) }
                 val weights = JSONArray()
                 session.weightsPerSet.forEach { weights.put(it) }
+                val planned = JSONArray()
+                session.plannedRepsPerSet.forEach { planned.put(it) }
                 sessions.put(
                     JSONObject()
                         .put("id", session.id)
@@ -218,8 +222,7 @@ object WorkoutStore {
                         .put("duration", session.durationMillis)
                         .put("reps_per_set", reps)
                         .put("weights_per_set", weights)
-                        .put("planned_reps", session.plannedReps)
-                        .put("planned_sets", session.plannedSets)
+                        .put("planned_reps_per_set", planned)
                         .put("completed", session.completed)
                 )
             }
@@ -244,13 +247,9 @@ object WorkoutStore {
                 id = item.optString("id"),
                 name = item.optString("name"),
                 phases = phases,
-                reps = item.optInt("reps", 10).coerceAtLeast(1),
-                sets = item.optInt("sets", 1).coerceAtLeast(1),
+                setPlans = readSetPlans(item),
                 restSeconds = item.optInt("rest", 90).coerceAtLeast(0),
-                weightKg = item.optDouble("weight", 0.0).takeUnless { it.isNaN() } ?: 0.0,
-                setWeights = item.optJSONArray("set_weights")?.let { array ->
-                    (0 until array.length()).map { array.optDouble(it, 0.0) }
-                }
+                manualNextSet = item.optBoolean("manual_next", false)
             )
         }
         val sessionArray = root.optJSONArray("sessions") ?: JSONArray()
@@ -265,8 +264,10 @@ object WorkoutStore {
                 durationMillis = item.optLong("duration"),
                 repsPerSet = (0 until repsArray.length()).map { repsArray.optInt(it) },
                 weightsPerSet = (0 until weightsArray.length()).map { weightsArray.optDouble(it, 0.0) },
-                plannedReps = item.optInt("planned_reps"),
-                plannedSets = item.optInt("planned_sets"),
+                plannedRepsPerSet = item.optJSONArray("planned_reps_per_set")
+                    ?.let { array -> (0 until array.length()).map { array.optInt(it) } }
+                    // Saved before sets could differ: one count for a number of sets.
+                    ?: List(item.optInt("planned_sets")) { item.optInt("planned_reps") },
                 completed = item.optBoolean("completed")
             )
         }
@@ -274,6 +275,26 @@ object WorkoutStore {
     } catch (e: Exception) {
         // A corrupt file must not take the app down.
         WorkoutData()
+    }
+
+    /**
+     * Sets of a stored template. Files written before sets could differ hold one rep count,
+     * a set count, and either one weight or a weight per set.
+     */
+    private fun readSetPlans(item: JSONObject): List<SetPlan> {
+        item.optJSONArray("set_plans")?.let { array ->
+            val plans = (0 until array.length()).mapNotNull { i ->
+                val plan = array.optJSONObject(i) ?: return@mapNotNull null
+                SetPlan(plan.optInt("reps", 10).coerceAtLeast(1), plan.optDouble("weight", 0.0))
+            }
+            if (plans.isNotEmpty()) return plans
+        }
+        val reps = item.optInt("reps", 10).coerceAtLeast(1)
+        val weight = item.optDouble("weight", 0.0).takeUnless { it.isNaN() } ?: 0.0
+        val weights = item.optJSONArray("set_weights")
+        return List(item.optInt("sets", 1).coerceAtLeast(1)) { i ->
+            SetPlan(reps, weights?.optDouble(i, weight) ?: weight)
+        }
     }
 
     // endregion

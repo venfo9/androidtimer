@@ -55,9 +55,13 @@ class WorkoutService : Service() {
             val template = state.template ?: return ""
             val set = "Подход ${state.setIndex + 1} из ${template.sets}"
             return when (state.shownStage) {
-                WorkoutStage.REST -> "Отдых перед подходом ${state.setIndex + 1} из ${template.sets}"
+                WorkoutStage.REST -> if (state.manualRest) {
+                    "Отдых · подход ${state.setIndex + 1} из ${template.sets} по кнопке"
+                } else {
+                    "Отдых перед подходом ${state.setIndex + 1} из ${template.sets}"
+                }
                 WorkoutStage.COUNTDOWN -> "$set · приготовьтесь"
-                else -> "$set · повторение ${state.repsInCurrentSet + 1} из ${template.reps}"
+                else -> "$set · повторение ${state.repsInCurrentSet + 1} из ${template.repsForSet(state.setIndex)}"
             }
         }
 

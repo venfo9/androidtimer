@@ -77,12 +77,25 @@ private fun workoutsLabel(n: Int) = plural(n, "тренировка", "трен�
 
 private fun restLabel(seconds: Int) = if (seconds == 0) "без отдыха" else formatClock(seconds * 1000L)
 
+private fun templateRestLabel(template: WorkoutTemplate) =
+    if (template.manualNextSet) "следующий подход по кнопке" else "отдых ${restLabel(template.restSeconds)}"
+
+/** "10 повторений × 3 подхода", or "3 подхода: 12 · 10 · 8" when the counts differ. */
+private fun templateSetsLabel(template: WorkoutTemplate): String {
+    val reps = template.setPlans.map { it.reps }
+    return if (reps.distinct().size == 1) {
+        "${repsLabel(reps.first())} × ${setsLabel(template.sets)}"
+    } else {
+        "${setsLabel(template.sets)}: ${reps.joinToString(" · ")}"
+    }
+}
+
 private fun templateWeightLabel(template: WorkoutTemplate): String? {
-    val perSet = template.setWeights
+    val weights = template.setPlans.map { it.weightKg }
     return when {
-        perSet != null -> "Вес по подходам: " + perSet.joinToString(" / ") { formatNumber(it) } + " кг"
-        template.weightKg > 0 -> "Вес ${formatWeight(template.weightKg)}"
-        else -> null
+        weights.all { it == 0.0 } -> null
+        weights.distinct().size == 1 -> "Вес ${formatWeight(weights.first())}"
+        else -> "Вес по подходам: " + weights.joinToString(" / ") { formatNumber(it) } + " кг"
     }
 }
 
@@ -105,6 +118,10 @@ fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) 
 
     if (run.active) {
         ActiveWorkout(run)
+        return
+    }
+    if (run.stage == WorkoutStage.REVIEW) {
+        WorkoutReview(run)
         return
     }
 
@@ -146,12 +163,12 @@ fun WorkoutScreen(onEditTemplate: (String?) -> Unit, onOpenHistory: () -> Unit) 
                     Text(template.name, fontSize = 18.sp, fontWeight = FontWeight.Medium)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Темп ${template.tempoLabel} · ${repsLabel(template.reps)} × ${setsLabel(template.sets)}",
+                        "Темп ${template.tempoLabel} · ${templateSetsLabel(template)}",
                         fontSize = 13.sp
                     )
                     Text(
                         template.phases.joinToString(" → ") { "${it.name} ${it.seconds} с" } +
-                            " · отдых ${restLabel(template.restSeconds)}",
+                            " · ${templateRestLabel(template)}",
                         fontSize = 13.sp
                     )
                     templateWeightLabel(template)?.let { Text(it, fontSize = 13.sp) }
@@ -230,10 +247,12 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         // The engine has already counted the spoken number down, so show the one just heard.
         WorkoutStage.COUNTDOWN -> (run.countdown + 1).toString()
         WorkoutStage.WORK -> run.secondInPhase.toString()
-        WorkoutStage.REST -> formatClock(run.restLeft * 1000L)
+        WorkoutStage.REST -> formatClock((if (run.manualRest) run.restElapsed else run.restLeft) * 1000L)
         else -> ""
     }
     val resting = stage == WorkoutStage.REST
+    // During rest the set just done can still be corrected.
+    val doneSet = run.setIndex - 1
 
     Column(
         modifier = Modifier
@@ -292,7 +311,7 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         Spacer(Modifier.height(24.dp))
         if (!resting) {
             Text(
-                "Повторение ${run.repsInCurrentSet + 1} из ${template.reps}",
+                "Повторение ${run.repsInCurrentSet + 1} из ${template.repsForSet(run.setIndex)}",
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Medium
             )
@@ -307,15 +326,38 @@ private fun ActiveWorkout(run: WorkoutRunState) {
             TextButton(onClick = { editWeight = true }) { Text("Изменить") }
         }
 
-        Spacer(Modifier.height(32.dp))
-        Button(
-            onClick = { WorkoutEngine.togglePause() },
-            modifier = Modifier.fillMaxWidth().height(64.dp)
-        ) {
-            Text(if (paused) "Продолжить" else "Пауза", fontSize = 22.sp)
+        if (resting && doneSet >= 0) {
+            Spacer(Modifier.height(16.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Подход ${doneSet + 1}: сколько сделали", fontWeight = FontWeight.Medium)
+                    SetCorrection(
+                        reps = run.repsPerSet[doneSet],
+                        weightKg = run.weightsPerSet.getOrElse(doneSet) { 0.0 },
+                        onChange = { reps, kg -> WorkoutEngine.correctSet(doneSet, reps, kg) }
+                    )
+                }
+            }
         }
 
-        if (stage == WorkoutStage.REST) {
+        Spacer(Modifier.height(32.dp))
+        if (resting && run.manualRest && !paused) {
+            Button(
+                onClick = { WorkoutEngine.skipRest() },
+                modifier = Modifier.fillMaxWidth().height(64.dp)
+            ) {
+                Text("Следующий подход", fontSize = 22.sp)
+            }
+        } else {
+            Button(
+                onClick = { WorkoutEngine.togglePause() },
+                modifier = Modifier.fillMaxWidth().height(64.dp)
+            ) {
+                Text(if (paused) "Продолжить" else "Пауза", fontSize = 22.sp)
+            }
+        }
+
+        if (stage == WorkoutStage.REST && !run.manualRest) {
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { WorkoutEngine.skipRest() }) { Text("Пропустить отдых") }
@@ -331,7 +373,7 @@ private fun ActiveWorkout(run: WorkoutRunState) {
 
         Spacer(Modifier.height(16.dp))
         Text(
-            "«Завершить» сохранит сделанное в историю, «Сброс» удалит тренировку.",
+            "«Завершить» покажет итог, его можно поправить перед сохранением. «Сброс» удалит тренировку.",
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -376,6 +418,77 @@ private fun ActiveWorkout(run: WorkoutRunState) {
     }
 }
 
+/** Reps and weight of one set, both typed or nudged with -/+. */
+@Composable
+private fun SetCorrection(reps: Int, weightKg: Double, onChange: (reps: Int, weightKg: Double) -> Unit) {
+    LabeledRow("Повторений") {
+        IntField(reps, 0..WorkoutTemplate.MAX_REPS) { onChange(it, weightKg) }
+    }
+    LabeledRow("Вес, кг") {
+        WeightField(weightKg) { onChange(reps, it) }
+    }
+}
+
+/** The finished workout, set by set, to correct before it goes into the history. */
+@Composable
+private fun WorkoutReview(run: WorkoutRunState) {
+    val template = run.template ?: return
+    var confirmDiscard by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    ) {
+        Text(
+            if (run.completed) "Готово: ${template.name}" else "Остановлено: ${template.name}",
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            "Проверьте подходы и поправьте, если сделали меньше или с другим весом. " +
+                "Подход с нулём повторений не сохранится.",
+            fontSize = 13.sp
+        )
+        Spacer(Modifier.height(12.dp))
+        run.repsPerSet.forEachIndexed { index, reps ->
+            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        "Подход ${index + 1} · план ${template.repsForSet(index)}",
+                        fontWeight = FontWeight.Medium
+                    )
+                    SetCorrection(
+                        reps = reps,
+                        weightKg = run.weightsPerSet.getOrElse(index) { 0.0 },
+                        onChange = { r, kg -> WorkoutEngine.correctSet(index, r, kg) }
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { WorkoutEngine.saveReview() }) { Text("Сохранить") }
+            OutlinedButton(onClick = { confirmDiscard = true }) { Text("Не сохранять") }
+        }
+    }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("Не сохранять тренировку?") },
+            text = { Text("Подходы не попадут в историю.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDiscard = false
+                    WorkoutEngine.discardReview()
+                }) { Text("Не сохранять") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("Отмена") } }
+        )
+    }
+}
+
 @Composable
 fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
     val context = LocalContext.current
@@ -386,16 +499,9 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
 
     var name by remember { mutableStateOf(initial.name) }
     var phases by remember { mutableStateOf(initial.phases) }
-    var reps by remember { mutableStateOf(initial.reps) }
-    var sets by remember { mutableStateOf(initial.sets) }
+    var setPlans by remember { mutableStateOf(initial.setPlans) }
     var rest by remember { mutableStateOf(initial.restSeconds) }
-    var weight by remember { mutableStateOf(initial.weightKg) }
-    var perSetWeights by remember { mutableStateOf(initial.setWeights != null) }
-    var setWeights by remember { mutableStateOf(initial.setWeights ?: emptyList()) }
-
-    // Sets added after the weights were typed take the last weight in the list.
-    fun resolvedSetWeights(): List<Double> =
-        List(sets) { index -> setWeights.getOrElse(index) { setWeights.lastOrNull() ?: weight } }
+    var manualNextSet by remember { mutableStateOf(initial.manualNextSet) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     Column(
@@ -450,43 +556,69 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
         }
 
         Spacer(Modifier.height(20.dp))
-        LabeledRow("Повторений в подходе") {
-            IntField(reps, 1..WorkoutTemplate.MAX_REPS) { reps = it }
+        Text("Подходы", fontWeight = FontWeight.Medium)
+        Text("Повторения и вес для каждого подхода. Вес 0 означает без веса, только своё тело.", fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        setPlans.forEachIndexed { index, plan ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${index + 1}.", modifier = Modifier.width(28.dp), fontWeight = FontWeight.Medium)
+                CompactNumberField(
+                    value = plan.reps.toDouble(),
+                    label = "повт.",
+                    max = WorkoutTemplate.MAX_REPS.toDouble(),
+                    decimal = false,
+                    width = 80.dp
+                ) { reps ->
+                    setPlans = setPlans.toMutableList().also { it[index] = plan.copy(reps = reps.toInt().coerceAtLeast(1)) }
+                }
+                Spacer(Modifier.width(8.dp))
+                CompactNumberField(
+                    value = plan.weightKg,
+                    label = "кг",
+                    max = WorkoutTemplate.MAX_WEIGHT_KG,
+                    decimal = true,
+                    width = 96.dp
+                ) { kg ->
+                    setPlans = setPlans.toMutableList().also { it[index] = plan.copy(weightKg = kg) }
+                }
+                if (setPlans.size > 1) {
+                    TextButton(
+                        onClick = { setPlans = setPlans.toMutableList().also { it.removeAt(index) } },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.size(40.dp)
+                    ) { Text("✕") }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
         }
-        LabeledRow("Подходов") {
-            IntField(sets, 1..WorkoutTemplate.MAX_SETS) { sets = it }
-        }
-        LabeledRow("Отдых, сек (${restLabel(rest)})") {
-            IntField(rest, 0..WorkoutTemplate.MAX_REST_SECONDS, step = 15) { rest = it }
+        Row {
+            if (setPlans.size < WorkoutTemplate.MAX_SETS) {
+                // A new set repeats the last one, so a uniform plan needs only taps on "+".
+                TextButton(onClick = { setPlans = setPlans + setPlans.last() }) { Text("+ Добавить подход") }
+            }
+            if (setPlans.size > 1) {
+                TextButton(onClick = { setPlans = List(setPlans.size) { setPlans.first() } }) {
+                    Text("Всем как в 1-м")
+                }
+            }
         }
 
         Spacer(Modifier.height(20.dp))
-        Text("Вес, кг", fontWeight = FontWeight.Medium)
-        Text("0 означает без веса, только своё тело.", fontSize = 13.sp)
-        Spacer(Modifier.height(8.dp))
+        Text("Отдых между подходами", fontWeight = FontWeight.Medium)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(
-                checked = perSetWeights,
-                onCheckedChange = { on ->
-                    if (on) setWeights = List(sets) { weight }
-                    perSetWeights = on
-                }
-            )
+            Switch(checked = manualNextSet, onCheckedChange = { manualNextSet = it })
             Spacer(Modifier.width(12.dp))
-            Text("Разный вес по подходам")
+            Text("Следующий подход по кнопке")
         }
-        if (perSetWeights) {
-            val current = resolvedSetWeights()
-            current.forEachIndexed { index, kg ->
-                LabeledRow("Подход ${index + 1}") {
-                    WeightField(kg) { value ->
-                        setWeights = current.toMutableList().also { it[index] = value }
-                    }
-                }
-            }
+        if (manualNextSet) {
+            Text(
+                "Отдых идёт без таймера, на экране видно, сколько прошло. " +
+                    "Подход начнётся после кнопки «Следующий подход» и отсчёта 3 секунды.",
+                fontSize = 13.sp
+            )
         } else {
-            LabeledRow("На все подходы") {
-                WeightField(weight) { weight = it }
+            LabeledRow("Отдых, сек (${restLabel(rest)})") {
+                IntField(rest, 0..WorkoutTemplate.MAX_REST_SECONDS, step = 15) { rest = it }
             }
         }
 
@@ -498,11 +630,9 @@ fun WorkoutTemplateEditorScreen(templateId: String?, onDone: () -> Unit) {
                     initial.copy(
                         name = name.trim().ifEmpty { "Упражнение" },
                         phases = phases.mapIndexed { i, phase -> phase.copy(name = phase.name.trim().ifEmpty { "Фаза ${i + 1}" }) },
-                        reps = reps,
-                        sets = sets,
+                        setPlans = setPlans,
                         restSeconds = rest,
-                        weightKg = if (perSetWeights) resolvedSetWeights().first() else weight,
-                        setWeights = if (perSetWeights) resolvedSetWeights() else null
+                        manualNextSet = manualNextSet
                     )
                 )
                 onDone()
@@ -617,6 +747,38 @@ private fun NumberField(
     }
 }
 
+/** A typed number without -/+ buttons, narrow enough for two in a table row. */
+@Composable
+private fun CompactNumberField(
+    value: Double,
+    label: String,
+    max: Double,
+    decimal: Boolean,
+    width: Dp,
+    onChange: (Double) -> Unit
+) {
+    // Same ownership rule as NumberField: the text follows the value only when it changes elsewhere.
+    var text by remember { mutableStateOf(formatNumber(value)) }
+    LaunchedEffect(value) {
+        if (text.replace(',', '.').toDoubleOrNull() != value) text = formatNumber(value)
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { raw ->
+            val cleaned = cleanNumber(raw, decimal)
+            text = cleaned
+            cleaned.replace(',', '.').toDoubleOrNull()?.let { onChange(it.coerceIn(0.0, max)) }
+        },
+        label = { Text(label) },
+        singleLine = true,
+        textStyle = LocalTextStyle.current.copy(fontSize = 16.sp),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number
+        ),
+        modifier = Modifier.width(width)
+    )
+}
+
 /** Digits only, plus one decimal comma when [decimal]; a typed dot becomes a comma. */
 private fun cleanNumber(raw: String, decimal: Boolean): String {
     val out = StringBuilder()
@@ -675,7 +837,7 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
                 )
                 val marks = buildList {
                     add("по подходам: ${session.setsLabel}")
-                    if (!session.completed) add("остановлено, план ${session.plannedSets} × ${session.plannedReps}")
+                    if (!session.completed) add("остановлено, план ${session.plannedLabel}")
                 }
                 Text(marks.joinToString(" · "), fontSize = 13.sp)
                 TextButton(
