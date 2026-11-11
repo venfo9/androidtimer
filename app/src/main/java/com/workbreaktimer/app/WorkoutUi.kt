@@ -224,8 +224,9 @@ fun WorkoutScreen(
             )
         }
         Spacer(Modifier.height(16.dp))
+        Button(onClick = { onEditTemplate(null, folderId) }) { Text("Добавить упражнение") }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { onEditTemplate(null, folderId) }) { Text("Добавить упражнение") }
+            OutlinedButton(onClick = { onEditTemplate(NEW_SUPERSET_ID, folderId) }) { Text("Добавить суперсет") }
             if (folderId == null) {
                 OutlinedButton(onClick = { newFolder = true }) { Text("Новая папка") }
             }
@@ -346,13 +347,31 @@ private fun TemplateCard(
                     }
                 }
             }
-            Text("Темп ${template.tempoLabel} · ${templateSetsLabel(template)}", fontSize = 13.sp)
-            Text(
-                template.phases.joinToString(" → ") { "${it.name} ${it.seconds} с" } +
-                    " · ${templateRestLabel(template)}",
-                fontSize = 13.sp
-            )
-            templateWeightLabel(template)?.let { Text(it, fontSize = 13.sp) }
+            if (template.isSuperset) {
+                Text("Суперсет · ${roundsLabel(template.rounds)}", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                for (part in template.parts) {
+                    val weights = part.setPlans.map { it.weightKg }.filter { it > 0 }.distinct()
+                    Text(
+                        "${part.name} · ${part.phases.joinToString("-") { it.seconds.toString() }} · " +
+                            part.setPlans.joinToString(" · ") { it.reps.toString() } +
+                            if (weights.isEmpty()) "" else " · " + weights.joinToString(" / ") { formatNumber(it) } + " кг",
+                        fontSize = 13.sp
+                    )
+                }
+                Text(
+                    "переход " + (if (template.manualTransition) "по кнопке" else restLabel(template.transitionSeconds)) +
+                        " · " + if (template.manualNextSet) "следующий круг по кнопке" else "отдых ${restLabel(template.restSeconds)}",
+                    fontSize = 13.sp
+                )
+            } else {
+                Text("Темп ${template.tempoLabel} · ${templateSetsLabel(template)}", fontSize = 13.sp)
+                Text(
+                    template.phases.joinToString(" → ") { "${it.name} ${it.seconds} с" } +
+                        " · ${templateRestLabel(template)}",
+                    fontSize = 13.sp
+                )
+                templateWeightLabel(template)?.let { Text(it, fontSize = 13.sp) }
+            }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onStart) { Text("Старт") }
@@ -392,40 +411,52 @@ private fun TemplateCard(
 
 @Composable
 private fun WorkoutSummaryCard(run: WorkoutRunState, onOpenHistory: () -> Unit) {
-    val session = run.summary
+    val sessions = run.summary
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
-            if (session == null) {
+            if (sessions.isEmpty()) {
                 Text("Тренировка остановлена", fontWeight = FontWeight.Medium)
                 Text("Ни одного повторения, в историю ничего не попало.", fontSize = 13.sp)
             } else {
+                val title = run.template?.name ?: sessions.first().name
                 Text(
-                    if (session.completed) "Готово: ${session.name}" else "Остановлено: ${session.name}",
+                    if (sessions.first().completed) "Готово: $title" else "Остановлено: $title",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Medium
                 )
-                Spacer(Modifier.height(4.dp))
-                Text("${setsLabel(session.repsPerSet.size)} · ${repsLabel(session.totalReps)} · ${formatClock(session.durationMillis)}")
-                Text("По подходам: ${session.setsLabel}", fontSize = 13.sp)
-                if (session.volumeKg > 0) Text("Объём ${formatWeight(session.volumeKg)}", fontSize = 13.sp)
+                Text(formatClock(sessions.first().durationMillis), fontSize = 13.sp)
+                for (session in sessions) {
+                    Spacer(Modifier.height(6.dp))
+                    if (sessions.size > 1) Text(session.name, fontWeight = FontWeight.Medium)
+                    Text("${setsLabel(session.repsPerSet.size)} · ${repsLabel(session.totalReps)}")
+                    Text("По подходам: ${session.setsLabel}", fontSize = 13.sp)
+                    if (session.volumeKg > 0) Text("Объём ${formatWeight(session.volumeKg)}", fontSize = 13.sp)
+                }
             }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { WorkoutEngine.dismissSummary() }) { Text("Закрыть") }
-                if (session != null) TextButton(onClick = onOpenHistory) { Text("История") }
+                if (sessions.isNotEmpty()) TextButton(onClick = onOpenHistory) { Text("История") }
             }
         }
     }
 }
 
+private fun roundsLabel(n: Int) = plural(n, "круг", "круга", "кругов")
+
 @Composable
 private fun ActiveWorkout(run: WorkoutRunState) {
     val template = run.template ?: return
+    val part = run.part ?: return
     val stage = run.shownStage
     val paused = run.stage == WorkoutStage.PAUSED
+    val superset = template.isSuperset
+    val setWord = if (superset) "Круг" else "Подход"
     var confirmReset by remember { mutableStateOf(false) }
     var editWeight by remember { mutableStateOf(false) }
 
+    val resting = stage == WorkoutStage.REST
+    val transition = resting && run.restKind == RestKind.TRANSITION
     val color = when (stage) {
         WorkoutStage.WORK -> PHASE_COLORS[run.phaseIndex % PHASE_COLORS.size]
         WorkoutStage.REST -> REST_COLOR
@@ -433,8 +464,8 @@ private fun ActiveWorkout(run: WorkoutRunState) {
     }
     val title = when (stage) {
         WorkoutStage.COUNTDOWN -> "Приготовьтесь"
-        WorkoutStage.WORK -> template.phases[run.phaseIndex].name
-        WorkoutStage.REST -> "Отдых"
+        WorkoutStage.WORK -> part.phases[run.phaseIndex].name
+        WorkoutStage.REST -> if (transition) "Переход" else "Отдых"
         else -> ""
     }
     val bigNumber = when (stage) {
@@ -444,9 +475,6 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         WorkoutStage.REST -> formatClock((if (run.manualRest) run.restElapsed else run.restLeft) * 1000L)
         else -> ""
     }
-    val resting = stage == WorkoutStage.REST
-    // During rest the set just done can still be corrected.
-    val doneSet = run.setIndex - 1
 
     Column(
         modifier = Modifier
@@ -457,9 +485,17 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(template.name, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+        if (superset) {
+            Text(
+                (if (transition) "Дальше: " else "") +
+                    "${part.name} (${run.partIndex + 1} из ${template.parts.size})",
+                fontSize = 16.sp
+            )
+        }
         Spacer(Modifier.height(4.dp))
         Text(
-            (if (resting) "Дальше подход " else "Подход ") + "${run.setIndex + 1} из ${template.sets}",
+            (if (resting && !transition) "Дальше ${setWord.lowercase()} " else "$setWord ") +
+                "${run.setIndex + 1} из ${template.rounds}",
             fontSize = 16.sp
         )
         Spacer(Modifier.height(24.dp))
@@ -474,7 +510,7 @@ private fun ActiveWorkout(run: WorkoutRunState) {
             Text(bigNumber, fontSize = 112.sp, fontWeight = FontWeight.Bold, color = color)
             if (stage == WorkoutStage.WORK) {
                 Text(
-                    " / ${template.phases[run.phaseIndex].seconds}",
+                    " / ${part.phases[run.phaseIndex].seconds}",
                     fontSize = 32.sp,
                     modifier = Modifier.padding(bottom = 24.dp)
                 )
@@ -482,7 +518,7 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            template.phases.forEachIndexed { index, phase ->
+            part.phases.forEachIndexed { index, phase ->
                 val current = stage == WorkoutStage.WORK && index == run.phaseIndex
                 val phaseColor = PHASE_COLORS[index % PHASE_COLORS.size]
                 Box(
@@ -505,7 +541,7 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         Spacer(Modifier.height(24.dp))
         if (!resting) {
             Text(
-                "Повторение ${run.repsInCurrentSet + 1} из ${template.repsForSet(run.setIndex)}",
+                "Повторение ${run.repsInCurrentSet + 1} из ${part.setPlans[run.setIndex].reps}",
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Medium
             )
@@ -513,22 +549,31 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             val kg = run.weightOfCurrentSet
             Text(
-                (if (resting) "Вес следующего подхода: " else "Вес: ") +
-                    if (kg == 0.0) "без веса" else formatWeight(kg),
+                (if (resting) "Вес дальше: " else "Вес: ") + if (kg == 0.0) "без веса" else formatWeight(kg),
                 fontSize = 18.sp
             )
             TextButton(onClick = { editWeight = true }) { Text("Изменить") }
         }
 
+        // During rest the set just done can still be corrected.
+        val donePart = run.lastDonePart
+        val doneSet = run.lastDoneSet
         if (resting && doneSet >= 0) {
             Spacer(Modifier.height(16.dp))
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Подход ${doneSet + 1}: сколько сделали", fontWeight = FontWeight.Medium)
+                    Text(
+                        if (superset) {
+                            "${template.parts[donePart].name}, круг ${doneSet + 1}: сколько сделали"
+                        } else {
+                            "Подход ${doneSet + 1}: сколько сделали"
+                        },
+                        fontWeight = FontWeight.Medium
+                    )
                     SetCorrection(
-                        reps = run.repsPerSet[doneSet],
-                        weightKg = run.weightsPerSet.getOrElse(doneSet) { 0.0 },
-                        onChange = { reps, kg -> WorkoutEngine.correctSet(doneSet, reps, kg) }
+                        reps = run.reps[donePart][doneSet],
+                        weightKg = run.weights[donePart][doneSet],
+                        onChange = { reps, kg -> WorkoutEngine.correctSet(donePart, doneSet, reps, kg) }
                     )
                 }
             }
@@ -540,7 +585,14 @@ private fun ActiveWorkout(run: WorkoutRunState) {
                 onClick = { WorkoutEngine.skipRest() },
                 modifier = Modifier.fillMaxWidth().height(64.dp)
             ) {
-                Text("Следующий подход", fontSize = 22.sp)
+                Text(
+                    when {
+                        transition -> "Следующее упражнение"
+                        superset -> "Следующий круг"
+                        else -> "Следующий подход"
+                    },
+                    fontSize = 20.sp
+                )
             }
         } else {
             Button(
@@ -551,10 +603,12 @@ private fun ActiveWorkout(run: WorkoutRunState) {
             }
         }
 
-        if (stage == WorkoutStage.REST && !run.manualRest) {
+        if (resting && !run.manualRest) {
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { WorkoutEngine.skipRest() }) { Text("Пропустить отдых") }
+                OutlinedButton(onClick = { WorkoutEngine.skipRest() }) {
+                    Text(if (transition) "Пропустить переход" else "Пропустить отдых")
+                }
                 OutlinedButton(onClick = { WorkoutEngine.addRest(30) }) { Text("+30 сек") }
             }
         }
@@ -578,12 +632,12 @@ private fun ActiveWorkout(run: WorkoutRunState) {
         var draft by remember { mutableStateOf(run.weightOfCurrentSet) }
         AlertDialog(
             onDismissRequest = { editWeight = false },
-            title = { Text("Вес подхода ${run.setIndex + 1}, кг") },
+            title = { Text("Вес, кг") },
             text = {
                 Column {
                     WeightField(draft) { draft = it }
                     Spacer(Modifier.height(8.dp))
-                    Text("Следующие подходы с тем же весом получат новый вес.", fontSize = 13.sp)
+                    Text("Следующие подходы этого упражнения с тем же весом получат новый вес.", fontSize = 13.sp)
                 }
             },
             confirmButton = {
@@ -644,19 +698,25 @@ private fun WorkoutReview(run: WorkoutRunState) {
                 "Подход с нулём повторений не сохранится.",
             fontSize = 13.sp
         )
-        Spacer(Modifier.height(12.dp))
-        run.repsPerSet.forEachIndexed { index, reps ->
-            Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        "Подход ${index + 1} · план ${template.repsForSet(index)}",
-                        fontWeight = FontWeight.Medium
-                    )
-                    SetCorrection(
-                        reps = reps,
-                        weightKg = run.weightsPerSet.getOrElse(index) { 0.0 },
-                        onChange = { r, kg -> WorkoutEngine.correctSet(index, r, kg) }
-                    )
+        template.parts.forEachIndexed { p, part ->
+            if (template.isSuperset) {
+                Spacer(Modifier.height(16.dp))
+                Text(part.name, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+            }
+            Spacer(Modifier.height(8.dp))
+            run.reps.getOrNull(p)?.forEachIndexed { set, reps ->
+                Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "${if (template.isSuperset) "Круг" else "Подход"} ${set + 1} · план ${part.setPlans[set].reps}",
+                            fontWeight = FontWeight.Medium
+                        )
+                        SetCorrection(
+                            reps = reps,
+                            weightKg = run.weights[p][set],
+                            onChange = { r, kg -> WorkoutEngine.correctSet(p, set, r, kg) }
+                        )
+                    }
                 }
             }
         }
@@ -683,20 +743,37 @@ private fun WorkoutReview(run: WorkoutRunState) {
     }
 }
 
+/** Passed as the template id to open the editor on a new superset. */
+const val NEW_SUPERSET_ID = "new_superset"
+
+/** [plans] cut or extended to [count] sets; new sets repeat the last one. */
+private fun resizePlans(plans: List<SetPlan>, count: Int): List<SetPlan> =
+    List(count) { plans.getOrElse(it) { plans.last() } }
+
 @Composable
 fun WorkoutTemplateEditorScreen(templateId: String?, folderId: String?, onDone: () -> Unit) {
     val context = LocalContext.current
     val data by WorkoutStore.state.collectAsState()
-    val existing = templateId?.let { data.template(it) }
+    val newSuperset = templateId == NEW_SUPERSET_ID
+    val existing = templateId?.takeIf { !newSuperset }?.let { data.template(it) }
     // Seeded once; the editor owns its draft until the user saves.
-    val initial = remember { existing ?: WorkoutStore.newTemplateDraft(folderId) }
+    val initial = remember {
+        existing ?: if (newSuperset) WorkoutStore.newSupersetDraft(folderId) else WorkoutStore.newTemplateDraft(folderId)
+    }
+    val isSuperset = initial.isSuperset
 
     var name by remember { mutableStateOf(initial.name) }
-    var phases by remember { mutableStateOf(initial.phases) }
-    var setPlans by remember { mutableStateOf(initial.setPlans) }
+    var parts by remember { mutableStateOf(initial.parts) }
+    var rounds by remember { mutableStateOf(initial.rounds) }
     var rest by remember { mutableStateOf(initial.restSeconds) }
     var manualNextSet by remember { mutableStateOf(initial.manualNextSet) }
+    var transition by remember { mutableStateOf(initial.transitionSeconds) }
+    var manualTransition by remember { mutableStateOf(initial.manualTransition) }
     var confirmDelete by remember { mutableStateOf(false) }
+
+    fun updatePart(index: Int, transform: (ExercisePart) -> ExercisePart) {
+        parts = parts.toMutableList().also { it[index] = transform(it[index]) }
+    }
 
     Column(
         modifier = Modifier
@@ -704,129 +781,134 @@ fun WorkoutTemplateEditorScreen(templateId: String?, folderId: String?, onDone: 
             .verticalScroll(rememberScrollState())
             .padding(24.dp)
     ) {
-        Text(if (existing == null) "Новое упражнение" else "Упражнение", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        Text(
+            when {
+                isSuperset && existing == null -> "Новый суперсет"
+                isSuperset -> "Суперсет"
+                existing == null -> "Новое упражнение"
+                else -> "Упражнение"
+            },
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Medium
+        )
         Spacer(Modifier.height(16.dp))
 
         OutlinedTextField(
             value = name,
             onValueChange = { name = it.take(40) },
             label = { Text("Название") },
-            placeholder = { Text("Например, Брусья") },
+            placeholder = { Text(if (isSuperset) "Например, Грудь и спина" else "Например, Брусья") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(Modifier.height(20.dp))
-        Text("Фазы одного повторения", fontWeight = FontWeight.Medium)
-        Text("Справа длительность фазы в секундах. Голос считает секунды каждой фазы с единицы.", fontSize = 13.sp)
-        Spacer(Modifier.height(8.dp))
-        phases.forEachIndexed { index, phase ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = phase.name,
-                    onValueChange = { value ->
-                        phases = phases.toMutableList().also { it[index] = phase.copy(name = value.take(20)) }
-                    },
-                    label = { Text("Фаза ${index + 1}") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                Spacer(Modifier.width(8.dp))
-                IntField(phase.seconds, 1..WorkoutTemplate.MAX_PHASE_SECONDS) { seconds ->
-                    phases = phases.toMutableList().also { it[index] = phase.copy(seconds = seconds) }
-                }
-                if (phases.size > 1) {
-                    TextButton(
-                        onClick = { phases = phases.toMutableList().also { it.removeAt(index) } },
-                        contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier.size(40.dp)
-                    ) { Text("✕") }
-                }
-            }
+        if (!isSuperset) {
+            Spacer(Modifier.height(20.dp))
+            PhasesEditor(parts[0].phases) { phases -> updatePart(0) { it.copy(phases = phases) } }
+
+            Spacer(Modifier.height(20.dp))
+            Text("Подходы", fontWeight = FontWeight.Medium)
+            Text("Повторения и вес для каждого подхода. Вес 0 означает без веса, только своё тело.", fontSize = 13.sp)
             Spacer(Modifier.height(8.dp))
-        }
-        if (phases.size < WorkoutTemplate.MAX_PHASES) {
-            TextButton(onClick = { phases = phases + WorkoutPhase("", 1) }) { Text("+ Добавить фазу") }
-        }
+            SetPlansEditor(parts[0].setPlans, fixedCount = false) { plans -> updatePart(0) { it.copy(setPlans = plans) } }
 
-        Spacer(Modifier.height(20.dp))
-        Text("Подходы", fontWeight = FontWeight.Medium)
-        Text("Повторения и вес для каждого подхода. Вес 0 означает без веса, только своё тело.", fontSize = 13.sp)
-        Spacer(Modifier.height(8.dp))
-        setPlans.forEachIndexed { index, plan ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("${index + 1}.", modifier = Modifier.width(28.dp), fontWeight = FontWeight.Medium)
-                CompactNumberField(
-                    value = plan.reps.toDouble(),
-                    label = "повт.",
-                    max = WorkoutTemplate.MAX_REPS.toDouble(),
-                    decimal = false,
-                    width = 80.dp
-                ) { reps ->
-                    setPlans = setPlans.toMutableList().also { it[index] = plan.copy(reps = reps.toInt().coerceAtLeast(1)) }
-                }
-                Spacer(Modifier.width(8.dp))
-                CompactNumberField(
-                    value = plan.weightKg,
-                    label = "кг",
-                    max = WorkoutTemplate.MAX_WEIGHT_KG,
-                    decimal = true,
-                    width = 96.dp
-                ) { kg ->
-                    setPlans = setPlans.toMutableList().also { it[index] = plan.copy(weightKg = kg) }
-                }
-                if (setPlans.size > 1) {
-                    TextButton(
-                        onClick = { setPlans = setPlans.toMutableList().also { it.removeAt(index) } },
-                        contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier.size(40.dp)
-                    ) { Text("✕") }
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-        }
-        Row {
-            if (setPlans.size < WorkoutTemplate.MAX_SETS) {
-                // A new set repeats the last one, so a uniform plan needs only taps on "+".
-                TextButton(onClick = { setPlans = setPlans + setPlans.last() }) { Text("+ Добавить подход") }
-            }
-            if (setPlans.size > 1) {
-                TextButton(onClick = { setPlans = List(setPlans.size) { setPlans.first() } }) {
-                    Text("Всем как в 1-м")
-                }
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
-        Text("Отдых между подходами", fontWeight = FontWeight.Medium)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(checked = manualNextSet, onCheckedChange = { manualNextSet = it })
-            Spacer(Modifier.width(12.dp))
-            Text("Следующий подход по кнопке")
-        }
-        if (manualNextSet) {
-            Text(
-                "Отдых идёт без таймера, на экране видно, сколько прошло. " +
-                    "Подход начнётся после кнопки «Следующий подход» и отсчёта 3 секунды.",
-                fontSize = 13.sp
+            Spacer(Modifier.height(20.dp))
+            PauseEditor(
+                title = "Отдых между подходами",
+                manualLabel = "Следующий подход по кнопке",
+                manual = manualNextSet,
+                seconds = rest,
+                onManual = { manualNextSet = it },
+                onSeconds = { rest = it }
             )
         } else {
-            LabeledRow("Отдых, сек (${restLabel(rest)})") {
-                IntField(rest, 0..WorkoutTemplate.MAX_REST_SECONDS, step = 15) { rest = it }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Упражнения идут одно за другим в каждом круге: первое, переход, второе и так далее, " +
+                    "потом отдых и следующий круг.",
+                fontSize = 13.sp
+            )
+            LabeledRow("Кругов") {
+                IntField(rounds, 1..WorkoutTemplate.MAX_SETS) { count ->
+                    rounds = count
+                    parts = parts.map { it.copy(setPlans = resizePlans(it.setPlans, count)) }
+                }
             }
+            parts.forEachIndexed { index, part ->
+                Spacer(Modifier.height(12.dp))
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Упражнение ${index + 1}", fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                            if (parts.size > WorkoutTemplate.MIN_SUPERSET_PARTS) {
+                                TextButton(onClick = { parts = parts.toMutableList().also { it.removeAt(index) } }) {
+                                    Text("Убрать")
+                                }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = part.name,
+                            onValueChange = { value -> updatePart(index) { it.copy(name = value.take(40)) } },
+                            label = { Text("Название упражнения") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        PhasesEditor(part.phases) { phases -> updatePart(index) { it.copy(phases = phases) } }
+                        Spacer(Modifier.height(12.dp))
+                        Text("Повторения и вес по кругам", fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.height(6.dp))
+                        SetPlansEditor(part.setPlans, fixedCount = true) { plans -> updatePart(index) { it.copy(setPlans = plans) } }
+                    }
+                }
+            }
+            if (parts.size < WorkoutTemplate.MAX_SUPERSET_PARTS) {
+                TextButton(onClick = {
+                    val last = parts.last()
+                    parts = parts + ExercisePart("Упражнение ${parts.size + 1}", last.phases, last.setPlans)
+                }) { Text("+ Добавить упражнение") }
+            }
+
+            Spacer(Modifier.height(20.dp))
+            PauseEditor(
+                title = "Переход между упражнениями",
+                manualLabel = "Следующее упражнение по кнопке",
+                manual = manualTransition,
+                seconds = transition,
+                onManual = { manualTransition = it },
+                onSeconds = { transition = it }
+            )
+            Spacer(Modifier.height(20.dp))
+            PauseEditor(
+                title = "Отдых после круга",
+                manualLabel = "Следующий круг по кнопке",
+                manual = manualNextSet,
+                seconds = rest,
+                onManual = { manualNextSet = it },
+                onSeconds = { rest = it }
+            )
         }
 
         Spacer(Modifier.height(32.dp))
         Row {
             Button(onClick = {
+                val cleanParts = parts.mapIndexed { i, part ->
+                    part.copy(
+                        name = part.name.trim().ifEmpty { "Упражнение ${i + 1}" },
+                        phases = part.phases.mapIndexed { j, phase -> phase.copy(name = phase.name.trim().ifEmpty { "Фаза ${j + 1}" }) }
+                    )
+                }
                 WorkoutStore.saveTemplate(
                     context,
                     initial.copy(
-                        name = name.trim().ifEmpty { "Упражнение" },
-                        phases = phases.mapIndexed { i, phase -> phase.copy(name = phase.name.trim().ifEmpty { "Фаза ${i + 1}" }) },
-                        setPlans = setPlans,
+                        name = name.trim().ifEmpty { if (isSuperset) "Суперсет" else "Упражнение" },
+                        phases = cleanParts[0].phases,
+                        setPlans = cleanParts[0].setPlans,
                         restSeconds = rest,
-                        manualNextSet = manualNextSet
+                        manualNextSet = manualNextSet,
+                        superset = if (isSuperset) cleanParts else null,
+                        transitionSeconds = transition,
+                        manualTransition = manualTransition
                     )
                 )
                 onDone()
@@ -836,7 +918,7 @@ fun WorkoutTemplateEditorScreen(templateId: String?, folderId: String?, onDone: 
         }
         if (existing != null) {
             Spacer(Modifier.height(8.dp))
-            TextButton(onClick = { confirmDelete = true }) { Text("Удалить упражнение") }
+            TextButton(onClick = { confirmDelete = true }) { Text(if (isSuperset) "Удалить суперсет" else "Удалить упражнение") }
         }
     }
 
@@ -854,6 +936,118 @@ fun WorkoutTemplateEditorScreen(templateId: String?, folderId: String?, onDone: 
             },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Отмена") } }
         )
+    }
+}
+
+@Composable
+private fun PhasesEditor(phases: List<WorkoutPhase>, onChange: (List<WorkoutPhase>) -> Unit) {
+    Text("Фазы одного повторения", fontWeight = FontWeight.Medium)
+    Text("Справа длительность фазы в секундах. Голос считает секунды каждой фазы с единицы.", fontSize = 13.sp)
+    Spacer(Modifier.height(8.dp))
+    phases.forEachIndexed { index, phase ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = phase.name,
+                onValueChange = { value ->
+                    onChange(phases.toMutableList().also { it[index] = phase.copy(name = value.take(20)) })
+                },
+                label = { Text("Фаза ${index + 1}") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(8.dp))
+            IntField(phase.seconds, 1..WorkoutTemplate.MAX_PHASE_SECONDS) { seconds ->
+                onChange(phases.toMutableList().also { it[index] = phase.copy(seconds = seconds) })
+            }
+            if (phases.size > 1) {
+                TextButton(
+                    onClick = { onChange(phases.toMutableList().also { it.removeAt(index) }) },
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.size(40.dp)
+                ) { Text("✕") }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+    if (phases.size < WorkoutTemplate.MAX_PHASES) {
+        TextButton(onClick = { onChange(phases + WorkoutPhase("", 1)) }) { Text("+ Добавить фазу") }
+    }
+}
+
+/**
+ * Reps and weight per set as a table. With [fixedCount] the number of rows belongs to someone
+ * else (the superset's rounds), so rows cannot be added or removed here.
+ */
+@Composable
+private fun SetPlansEditor(plans: List<SetPlan>, fixedCount: Boolean, onChange: (List<SetPlan>) -> Unit) {
+    plans.forEachIndexed { index, plan ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("${index + 1}.", modifier = Modifier.width(28.dp), fontWeight = FontWeight.Medium)
+            CompactNumberField(
+                value = plan.reps.toDouble(),
+                label = "повт.",
+                max = WorkoutTemplate.MAX_REPS.toDouble(),
+                decimal = false,
+                width = 80.dp
+            ) { reps ->
+                onChange(plans.toMutableList().also { it[index] = plan.copy(reps = reps.toInt().coerceAtLeast(1)) })
+            }
+            Spacer(Modifier.width(8.dp))
+            CompactNumberField(
+                value = plan.weightKg,
+                label = "кг",
+                max = WorkoutTemplate.MAX_WEIGHT_KG,
+                decimal = true,
+                width = 96.dp
+            ) { kg ->
+                onChange(plans.toMutableList().also { it[index] = plan.copy(weightKg = kg) })
+            }
+            if (!fixedCount && plans.size > 1) {
+                TextButton(
+                    onClick = { onChange(plans.toMutableList().also { it.removeAt(index) }) },
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.size(40.dp)
+                ) { Text("✕") }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+    }
+    Row {
+        if (!fixedCount && plans.size < WorkoutTemplate.MAX_SETS) {
+            // A new set repeats the last one, so a uniform plan needs only taps on "+".
+            TextButton(onClick = { onChange(plans + plans.last()) }) { Text("+ Добавить подход") }
+        }
+        if (plans.size > 1) {
+            TextButton(onClick = { onChange(List(plans.size) { plans.first() }) }) { Text("Всем как в 1-м") }
+        }
+    }
+}
+
+/** A pause that either runs on a timer of [seconds] or waits for the user's button. */
+@Composable
+private fun PauseEditor(
+    title: String,
+    manualLabel: String,
+    manual: Boolean,
+    seconds: Int,
+    onManual: (Boolean) -> Unit,
+    onSeconds: (Int) -> Unit
+) {
+    Text(title, fontWeight = FontWeight.Medium)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = manual, onCheckedChange = onManual)
+        Spacer(Modifier.width(12.dp))
+        Text(manualLabel)
+    }
+    if (manual) {
+        Text(
+            "Пауза идёт без таймера, на экране видно, сколько прошло. Дальше по кнопке и отсчёту 3 секунды.",
+            fontSize = 13.sp
+        )
+    } else {
+        LabeledRow("Секунд (${restLabel(seconds)})") {
+            IntField(seconds, 0..WorkoutTemplate.MAX_REST_SECONDS, step = 15) { onSeconds(it) }
+        }
     }
 }
 
@@ -1061,6 +1255,7 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
                 )
                 val marks = buildList {
                     add("по подходам: ${session.setsLabel}")
+                    session.supersetName?.let { add("суперсет «$it»") }
                     if (!session.completed) add("остановлено, план ${session.plannedLabel}")
                 }
                 Text(marks.joinToString(" · "), fontSize = 13.sp)

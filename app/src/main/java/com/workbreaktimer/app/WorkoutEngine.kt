@@ -11,11 +11,16 @@ import java.util.UUID
 
 enum class WorkoutStage { IDLE, COUNTDOWN, WORK, REST, PAUSED, REVIEW, FINISHED }
 
+/** What a REST is for: the pause between the exercises of a superset, or the rest after a round. */
+enum class RestKind { ROUND, TRANSITION }
+
 data class WorkoutRunState(
     val stage: WorkoutStage = WorkoutStage.IDLE,
     val template: WorkoutTemplate? = null,
-    /** Set in progress, from 0. During rest it already points at the set that comes next. */
+    /** Set (round) in progress, from 0. During rest after a round it already points at the next one. */
     val setIndex: Int = 0,
+    /** Exercise of the superset in progress; always 0 for a plain exercise. */
+    val partIndex: Int = 0,
     val phaseIndex: Int = 0,
     /** Second of the current phase that was just announced, from 1. */
     val secondInPhase: Int = 0,
@@ -23,28 +28,36 @@ data class WorkoutRunState(
     val restLeft: Int = 0,
     /** Seconds of rest so far, shown when the next set waits for the user's button. */
     val restElapsed: Int = 0,
+    val restKind: RestKind = RestKind.ROUND,
     val pausedFrom: WorkoutStage? = null,
-    val repsPerSet: List<Int> = emptyList(),
-    /** Kilograms per set; starts from the template and the user can change it on the go. */
-    val weightsPerSet: List<Double> = emptyList(),
+    /** Repetitions done, by exercise and then by set. */
+    val reps: List<List<Int>> = emptyList(),
+    /** Kilograms, by exercise and then by set; start from the template and can change on the go. */
+    val weights: List<List<Double>> = emptyList(),
+    /** The set finished last, which rest offers to correct; -1 before the first. */
+    val lastDonePart: Int = -1,
+    val lastDoneSet: Int = -1,
     val startedAtMillis: Long = 0,
     /** When the last set ended; fixed at REVIEW so time spent checking the numbers is not counted. */
     val endedAtMillis: Long = 0,
     /** At REVIEW: all planned sets were done, rather than stopped early. */
     val completed: Boolean = false,
-    /** What went into the history; set once the workout is FINISHED, null if nothing was done. */
-    val summary: WorkoutSession? = null
+    /** What went into the history once the workout is FINISHED; empty if nothing was saved. */
+    val summary: List<WorkoutSession> = emptyList()
 ) {
     val active: Boolean
         get() = stage == WorkoutStage.COUNTDOWN || stage == WorkoutStage.WORK ||
             stage == WorkoutStage.REST || stage == WorkoutStage.PAUSED
 
-    val repsInCurrentSet: Int get() = repsPerSet.getOrElse(setIndex) { 0 }
+    val part: ExercisePart? get() = template?.parts?.getOrNull(partIndex)
 
-    val weightOfCurrentSet: Double get() = weightsPerSet.getOrElse(setIndex) { 0.0 }
+    val repsInCurrentSet: Int get() = reps.getOrNull(partIndex)?.getOrNull(setIndex) ?: 0
 
-    /** The rest has no timer and waits for "next set". */
-    val manualRest: Boolean get() = template?.manualNextSet == true
+    val weightOfCurrentSet: Double get() = weights.getOrNull(partIndex)?.getOrNull(setIndex) ?: 0.0
+
+    /** The rest has no timer and waits for the user's button. */
+    val manualRest: Boolean
+        get() = if (restKind == RestKind.TRANSITION) template?.manualTransition == true else template?.manualNextSet == true
 
     /** The stage the screen should describe; a pause keeps showing where it stopped. */
     val shownStage: WorkoutStage get() = if (stage == WorkoutStage.PAUSED) pausedFrom ?: stage else stage
@@ -52,7 +65,8 @@ data class WorkoutRunState(
 
 /**
  * Runs a workout one beat per second: announces each second of each phase, a tone after each
- * repetition, rest between sets, and writes the result to [WorkoutStore].
+ * repetition, pauses between the exercises of a superset, rest between rounds, and hands the
+ * result to the user for review before it goes to [WorkoutStore].
  *
  * Beats are scheduled against absolute uptime so a late beat does not push all later ones
  * back. WorkoutService holds a wake lock for the whole workout, which keeps uptime running
@@ -93,13 +107,14 @@ object WorkoutEngine {
     fun start(context: Context, template: WorkoutTemplate) {
         prepare(context)
         if (_state.value.active) return
+        val rounds = template.rounds
         publish(
             WorkoutRunState(
                 stage = WorkoutStage.COUNTDOWN,
                 template = template,
                 countdown = START_COUNTDOWN,
-                repsPerSet = List(template.sets) { 0 },
-                weightsPerSet = List(template.sets) { template.weightForSet(it) },
+                reps = template.parts.map { List(rounds) { 0 } },
+                weights = template.parts.map { part -> List(rounds) { part.setPlans[it].weightKg } },
                 startedAtMillis = System.currentTimeMillis()
             )
         )
@@ -139,11 +154,10 @@ object WorkoutEngine {
         }
     }
 
+    /** Ends rest or a transition now; the next set starts after a short countdown. */
     fun skipRest() {
         val current = _state.value
-        val resting = current.stage == WorkoutStage.REST ||
-            (current.stage == WorkoutStage.PAUSED && current.pausedFrom == WorkoutStage.REST)
-        if (!resting) return
+        if (!current.resting) return
         handler.removeCallbacks(beatRunnable)
         voice?.silence()
         publish(current.copy(stage = WorkoutStage.COUNTDOWN, countdown = RESUME_COUNTDOWN, restLeft = 0, pausedFrom = null))
@@ -153,45 +167,51 @@ object WorkoutEngine {
 
     fun addRest(seconds: Int) {
         val current = _state.value
-        val resting = current.stage == WorkoutStage.REST ||
-            (current.stage == WorkoutStage.PAUSED && current.pausedFrom == WorkoutStage.REST)
-        if (!resting) return
+        if (!current.resting) return
         // Pushed out of the countdown range, the music comes back up until the countdown starts over.
         if (current.restLeft + seconds > REST_COUNTDOWN) voice?.releaseFocus()
         publish(current.copy(restLeft = current.restLeft + seconds))
     }
 
+    private val WorkoutRunState.resting: Boolean
+        get() = stage == WorkoutStage.REST || (stage == WorkoutStage.PAUSED && pausedFrom == WorkoutStage.REST)
+
     /**
-     * Changes the weight of the current set (during rest, of the next one). Later sets that
-     * were planned with the same weight follow, so with one weight for all sets a correction
-     * sticks, while a pyramid keeps its other steps.
+     * Changes the weight of the current set (during rest, of the next one) of the current
+     * exercise. Its later sets planned with the same weight follow, so with one weight for all
+     * sets a correction sticks, while a pyramid keeps its other steps.
      */
     fun setWeight(kg: Double) {
         val current = _state.value
         if (!current.active) return
         val old = current.weightOfCurrentSet
-        val weights = current.weightsPerSet.mapIndexed { index, weight ->
+        val partWeights = current.weights[current.partIndex].mapIndexed { index, weight ->
             when {
                 index == current.setIndex -> kg
                 index > current.setIndex && weight == old -> kg
                 else -> weight
             }
         }
-        publish(current.copy(weightsPerSet = weights))
+        publish(current.copy(weights = current.weights.toMutableList().also { it[current.partIndex] = partWeights }))
     }
 
     /**
-     * Fixes the numbers of a set after the fact: during rest for the set just done, and at
+     * Fixes the numbers of one set after the fact: during rest for the set just done, and at
      * REVIEW for any set. The engine counts repetitions of the tempo, not what the user lifted.
      */
-    fun correctSet(index: Int, reps: Int, weightKg: Double) {
+    fun correctSet(part: Int, set: Int, reps: Int, weightKg: Double) {
         val current = _state.value
         if (!current.active && current.stage != WorkoutStage.REVIEW) return
-        if (index !in current.repsPerSet.indices) return
+        val partReps = current.reps.getOrNull(part) ?: return
+        if (set !in partReps.indices) return
         publish(
             current.copy(
-                repsPerSet = current.repsPerSet.toMutableList().also { it[index] = reps.coerceAtLeast(0) },
-                weightsPerSet = current.weightsPerSet.toMutableList().also { it[index] = weightKg }
+                reps = current.reps.toMutableList().also { list ->
+                    list[part] = partReps.toMutableList().also { it[set] = reps.coerceAtLeast(0) }
+                },
+                weights = current.weights.toMutableList().also { list ->
+                    list[part] = current.weights[part].toMutableList().also { it[set] = weightKg }
+                }
             )
         )
     }
@@ -202,26 +222,35 @@ object WorkoutEngine {
         conclude(_state.value, completed = false)
     }
 
-    /** Writes the reviewed sets to the history. Sets left at zero repetitions are dropped. */
+    /**
+     * Writes the reviewed sets to the history, one entry per exercise, so a superset counts
+     * toward each exercise's own statistics. Sets left at zero repetitions are dropped.
+     */
     fun saveReview() {
         val current = _state.value
         val template = current.template ?: return
         if (current.stage != WorkoutStage.REVIEW) return
-        val kept = current.repsPerSet.indices.filter { current.repsPerSet[it] > 0 }
-        val session = if (kept.isEmpty()) null else WorkoutSession(
-            id = UUID.randomUUID().toString(),
-            name = template.name,
-            startedAtMillis = current.startedAtMillis,
-            durationMillis = current.endedAtMillis - current.startedAtMillis,
-            repsPerSet = kept.map { current.repsPerSet[it] },
-            weightsPerSet = kept.map { current.weightsPerSet.getOrElse(it) { 0.0 } },
-            plannedRepsPerSet = template.setPlans.map { it.reps },
-            completed = current.completed,
-            folderId = template.folderId
-        )
+        val sessions = template.parts.mapIndexedNotNull { p, part ->
+            val partReps = current.reps.getOrNull(p) ?: return@mapIndexedNotNull null
+            val kept = partReps.indices.filter { partReps[it] > 0 }
+            if (kept.isEmpty()) return@mapIndexedNotNull null
+            WorkoutSession(
+                id = UUID.randomUUID().toString(),
+                name = part.name,
+                startedAtMillis = current.startedAtMillis,
+                durationMillis = current.endedAtMillis - current.startedAtMillis,
+                repsPerSet = kept.map { partReps[it] },
+                weightsPerSet = kept.map { current.weights[p].getOrElse(it) { 0.0 } },
+                plannedRepsPerSet = part.setPlans.map { it.reps },
+                completed = current.completed,
+                folderId = template.folderId,
+                supersetName = if (template.isSuperset) template.name else null
+            )
+        }
         val context = appContext
-        if (session != null && context != null) WorkoutStore.addSession(context, session)
-        publish(current.copy(stage = WorkoutStage.FINISHED, summary = session))
+        // The newest entry goes on top of the history, so add in reverse to keep exercise order.
+        if (context != null) sessions.asReversed().forEach { WorkoutStore.addSession(context, it) }
+        publish(current.copy(stage = WorkoutStage.FINISHED, summary = sessions))
     }
 
     fun discardReview() {
@@ -250,7 +279,7 @@ object WorkoutEngine {
 
     private fun beat() {
         val current = _state.value
-        val template = current.template ?: return
+        val part = current.part ?: return
         when (current.stage) {
             WorkoutStage.COUNTDOWN -> {
                 if (current.countdown > 0) {
@@ -263,12 +292,12 @@ object WorkoutEngine {
             WorkoutStage.WORK -> {
                 var phase = current.phaseIndex
                 var second = current.secondInPhase + 1
-                if (second > template.phases[phase].seconds) {
+                if (second > part.phases[phase].seconds) {
                     phase++
                     second = 1
                 }
-                if (phase >= template.phases.size) {
-                    completeRep(current, template)
+                if (phase >= part.phases.size) {
+                    completeRep(current, part)
                 } else {
                     voice?.say(second)
                     publish(current.copy(phaseIndex = phase, secondInPhase = second))
@@ -307,51 +336,70 @@ object WorkoutEngine {
         publish(current.copy(stage = WorkoutStage.WORK, phaseIndex = 0, secondInPhase = 1))
     }
 
-    private fun completeRep(current: WorkoutRunState, template: WorkoutTemplate) {
-        val reps = current.repsPerSet.toMutableList()
-        reps[current.setIndex] = reps[current.setIndex] + 1
-        val updated = current.copy(repsPerSet = reps)
-        if (reps[current.setIndex] < template.repsForSet(current.setIndex)) {
+    private fun completeRep(current: WorkoutRunState, part: ExercisePart) {
+        val template = current.template ?: return
+        val partReps = current.reps[current.partIndex].toMutableList()
+        partReps[current.setIndex] = partReps[current.setIndex] + 1
+        val updated = current.copy(reps = current.reps.toMutableList().also { it[current.partIndex] = partReps })
+        if (partReps[current.setIndex] < part.setPlans[current.setIndex].reps) {
             startRep(updated)
             return
         }
-        if (current.setIndex + 1 >= template.sets) {
-            conclude(updated, completed = true)
-            return
+        val done = updated.copy(lastDonePart = current.partIndex, lastDoneSet = current.setIndex, phaseIndex = 0, secondInPhase = 0)
+        when {
+            // A superset moves on to its next exercise within the same round.
+            current.partIndex < template.parts.lastIndex -> pauseBetweenSets(
+                done.copy(partIndex = current.partIndex + 1, restKind = RestKind.TRANSITION),
+                manual = template.manualTransition,
+                seconds = template.transitionSeconds
+            )
+            current.setIndex + 1 >= template.rounds -> conclude(done, completed = true)
+            else -> pauseBetweenSets(
+                done.copy(partIndex = 0, setIndex = current.setIndex + 1, restKind = RestKind.ROUND),
+                manual = template.manualNextSet,
+                seconds = template.restSeconds
+            )
         }
+    }
+
+    private fun pauseBetweenSets(next: WorkoutRunState, manual: Boolean, seconds: Int) {
         voice?.tone(WorkoutVoice.Tone.SET)
-        val next = updated.copy(setIndex = current.setIndex + 1, phaseIndex = 0, secondInPhase = 0, restElapsed = 0)
-        if (template.manualNextSet) {
-            voice?.releaseFocus()
-            publish(next.copy(stage = WorkoutStage.REST, restLeft = 0))
-        } else if (template.restSeconds > 0) {
-            voice?.releaseFocus()
-            publish(next.copy(stage = WorkoutStage.REST, restLeft = template.restSeconds))
-        } else {
-            publish(next.copy(stage = WorkoutStage.COUNTDOWN, countdown = RESUME_COUNTDOWN))
+        when {
+            manual -> {
+                voice?.releaseFocus()
+                publish(next.copy(stage = WorkoutStage.REST, restLeft = 0, restElapsed = 0))
+            }
+            seconds > 0 -> {
+                voice?.releaseFocus()
+                publish(next.copy(stage = WorkoutStage.REST, restLeft = seconds, restElapsed = 0))
+            }
+            else -> publish(next.copy(stage = WorkoutStage.COUNTDOWN, countdown = RESUME_COUNTDOWN))
         }
     }
 
     // endregion
 
     /**
-     * Stops the beats and hands the sets over for review. Sets that never started say nothing
-     * about the workout, so they are left out of it.
+     * Stops the beats and hands the sets over for review. Rounds that never started say
+     * nothing about the workout, so they are left out of it.
      */
     private fun conclude(current: WorkoutRunState, completed: Boolean) {
         stopSound()
         if (completed) voice?.tone(WorkoutVoice.Tone.DONE)
-        val kept = current.repsPerSet.indices.filter { index -> current.repsPerSet[index] > 0 || index < current.setIndex }
-        val reps = kept.map { current.repsPerSet[it] }
+        val rounds = current.reps.firstOrNull()?.size ?: 0
+        val lastStarted = (0 until rounds).lastOrNull { round ->
+            round < current.setIndex || current.reps.any { it[round] > 0 }
+        }
+        val keep = (lastStarted ?: -1) + 1
         publish(
-            if (reps.sum() == 0) {
-                current.copy(stage = WorkoutStage.FINISHED, pausedFrom = null, summary = null)
+            if (current.reps.sumOf { it.sum() } == 0) {
+                current.copy(stage = WorkoutStage.FINISHED, pausedFrom = null, summary = emptyList())
             } else {
                 current.copy(
                     stage = WorkoutStage.REVIEW,
                     pausedFrom = null,
-                    repsPerSet = reps,
-                    weightsPerSet = kept.map { current.weightsPerSet.getOrElse(it) { 0.0 } },
+                    reps = current.reps.map { it.take(keep) },
+                    weights = current.weights.map { it.take(keep) },
                     endedAtMillis = System.currentTimeMillis(),
                     completed = completed
                 )

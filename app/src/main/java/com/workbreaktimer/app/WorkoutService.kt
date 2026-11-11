@@ -53,15 +53,17 @@ class WorkoutService : Service() {
 
         private fun notificationText(state: WorkoutRunState): String {
             val template = state.template ?: return ""
-            val set = "Подход ${state.setIndex + 1} из ${template.sets}"
+            val part = state.part ?: return ""
+            val word = if (template.isSuperset) "Круг" else "Подход"
+            val set = "$word ${state.setIndex + 1} из ${template.rounds}"
+            val exercise = if (template.isSuperset) "${part.name} · " else ""
             return when (state.shownStage) {
-                WorkoutStage.REST -> if (state.manualRest) {
-                    "Отдых · подход ${state.setIndex + 1} из ${template.sets} по кнопке"
-                } else {
-                    "Отдых перед подходом ${state.setIndex + 1} из ${template.sets}"
+                WorkoutStage.REST -> {
+                    val next = if (state.restKind == RestKind.TRANSITION) "дальше ${part.name}" else "дальше $set".lowercase()
+                    "Отдых · $next" + if (state.manualRest) " по кнопке" else ""
                 }
-                WorkoutStage.COUNTDOWN -> "$set · приготовьтесь"
-                else -> "$set · повторение ${state.repsInCurrentSet + 1} из ${template.repsForSet(state.setIndex)}"
+                WorkoutStage.COUNTDOWN -> "$exercise$set · приготовьтесь"
+                else -> "$exercise$set · повторение ${state.repsInCurrentSet + 1} из ${part.setPlans[state.setIndex].reps}"
             }
         }
 

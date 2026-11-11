@@ -19,7 +19,14 @@ data class WorkoutFolder(val id: String, val name: String)
 /** One planned set: how many repetitions, with how many kilograms (0 means body weight). */
 data class SetPlan(val reps: Int, val weightKg: Double = 0.0)
 
-/** A saved exercise: the tempo of one repetition and the sets to do. */
+/** One exercise of a superset, or the whole content of a plain exercise. */
+data class ExercisePart(val name: String, val phases: List<WorkoutPhase>, val setPlans: List<SetPlan>)
+
+/**
+ * A saved exercise: the tempo of one repetition and the sets to do. With [superset] set it is
+ * a superset instead: its parts run one after another within each round, and [phases] and
+ * [setPlans] mirror the first part.
+ */
 data class WorkoutTemplate(
     val id: String,
     val name: String,
@@ -30,8 +37,21 @@ data class WorkoutTemplate(
     /** Rest runs without a timer and the next set waits for the user's button. */
     val manualNextSet: Boolean = false,
     /** Folder on the workout tab; null keeps the exercise at the top level. */
-    val folderId: String? = null
+    val folderId: String? = null,
+    /** Two or three exercises done back to back each round; null for a plain exercise. */
+    val superset: List<ExercisePart>? = null,
+    /** Pause between the exercises of a superset within one round. */
+    val transitionSeconds: Int = DEFAULT_TRANSITION_SECONDS,
+    val manualTransition: Boolean = false
 ) {
+    val isSuperset: Boolean get() = superset != null
+
+    /** What the engine runs: the superset's exercises, or this exercise as the only part. */
+    val parts: List<ExercisePart> get() = superset ?: listOf(ExercisePart(name, phases, setPlans))
+
+    /** Rounds of a superset; for a plain exercise, its sets. */
+    val rounds: Int get() = parts.minOf { it.setPlans.size }
+
     /** "3-1-1", the way tempo is written in training plans. */
     val tempoLabel: String get() = phases.joinToString("-") { it.seconds.toString() }
 
@@ -49,6 +69,9 @@ data class WorkoutTemplate(
         const val MAX_REST_SECONDS = 600
         const val MAX_WEIGHT_KG = 500.0
         const val WEIGHT_STEP_KG = 2.5
+        const val MIN_SUPERSET_PARTS = 2
+        const val MAX_SUPERSET_PARTS = 3
+        const val DEFAULT_TRANSITION_SECONDS = 15
     }
 }
 
@@ -73,7 +96,9 @@ data class WorkoutSession(
     /** False when the user stopped before the last set ended. */
     val completed: Boolean,
     /** Folder the exercise was in when the workout was saved, for filtering the history. */
-    val folderId: String? = null
+    val folderId: String? = null,
+    /** Name of the superset this exercise was done in; null for a plain exercise. */
+    val supersetName: String? = null
 ) {
     val totalReps: Int get() = repsPerSet.sum()
 
@@ -139,6 +164,12 @@ object WorkoutStore {
 
     fun newTemplateDraft(folderId: String?): WorkoutTemplate =
         defaultTemplate().copy(id = UUID.randomUUID().toString(), name = "", folderId = folderId)
+
+    fun newSupersetDraft(folderId: String?): WorkoutTemplate {
+        val base = defaultTemplate()
+        val parts = List(2) { i -> ExercisePart("Упражнение ${i + 1}", base.phases, base.setPlans) }
+        return base.copy(id = UUID.randomUUID().toString(), name = "", folderId = folderId, superset = parts)
+    }
 
     fun saveTemplate(context: Context, template: WorkoutTemplate) {
         init(context)
@@ -265,10 +296,8 @@ object WorkoutStore {
         try {
             val templates = JSONArray()
             for (template in newState.templates) {
-                val phases = JSONArray()
-                template.phases.forEach { phases.put(JSONObject().put("name", it.name).put("seconds", it.seconds)) }
-                val setPlans = JSONArray()
-                template.setPlans.forEach { setPlans.put(JSONObject().put("reps", it.reps).put("weight", it.weightKg)) }
+                val phases = phasesJson(template.phases)
+                val setPlans = setPlansJson(template.setPlans)
                 templates.put(
                     JSONObject()
                         .put("id", template.id)
@@ -278,6 +307,13 @@ object WorkoutStore {
                         .put("rest", template.restSeconds)
                         .put("manual_next", template.manualNextSet)
                         .put("folder", template.folderId ?: "")
+                        .put("transition", template.transitionSeconds)
+                        .put("manual_transition", template.manualTransition)
+                        .also { json ->
+                            template.superset?.let { parts ->
+                                json.put("superset", JSONArray().also { array -> parts.forEach { array.put(partJson(it)) } })
+                            }
+                        }
                 )
             }
             val sessions = JSONArray()
@@ -299,6 +335,7 @@ object WorkoutStore {
                         .put("planned_reps_per_set", planned)
                         .put("completed", session.completed)
                         .put("folder", session.folderId ?: "")
+                        .put("superset", session.supersetName ?: "")
                 )
             }
             val folders = JSONArray()
@@ -316,11 +353,7 @@ object WorkoutStore {
         val templateArray = root.optJSONArray("templates") ?: JSONArray()
         val templates = (0 until templateArray.length()).mapNotNull { i ->
             val item = templateArray.optJSONObject(i) ?: return@mapNotNull null
-            val phaseArray = item.optJSONArray("phases") ?: JSONArray()
-            val phases = (0 until phaseArray.length()).mapNotNull { j ->
-                val phase = phaseArray.optJSONObject(j) ?: return@mapNotNull null
-                WorkoutPhase(phase.optString("name"), phase.optInt("seconds", 1).coerceAtLeast(1))
-            }
+            val phases = readPhases(item)
             if (phases.isEmpty()) return@mapNotNull null
             WorkoutTemplate(
                 id = item.optString("id"),
@@ -329,7 +362,12 @@ object WorkoutStore {
                 setPlans = readSetPlans(item),
                 restSeconds = item.optInt("rest", 90).coerceAtLeast(0),
                 manualNextSet = item.optBoolean("manual_next", false),
-                folderId = item.optString("folder").ifEmpty { null }
+                folderId = item.optString("folder").ifEmpty { null },
+                superset = item.optJSONArray("superset")?.let { array ->
+                    (0 until array.length()).mapNotNull { j -> array.optJSONObject(j)?.let(::readPart) }
+                }?.takeIf { it.size >= WorkoutTemplate.MIN_SUPERSET_PARTS },
+                transitionSeconds = item.optInt("transition", WorkoutTemplate.DEFAULT_TRANSITION_SECONDS).coerceAtLeast(0),
+                manualTransition = item.optBoolean("manual_transition", false)
             )
         }
         val sessionArray = root.optJSONArray("sessions") ?: JSONArray()
@@ -354,7 +392,8 @@ object WorkoutStore {
                 } else {
                     // Saved before folders existed: file it where its exercise is now.
                     templates.firstOrNull { it.name == item.optString("name") }?.folderId
-                }
+                },
+                supersetName = item.optString("superset").ifEmpty { null }
             )
         }
         val folderArray = root.optJSONArray("folders") ?: JSONArray()
@@ -366,6 +405,33 @@ object WorkoutStore {
     } catch (e: Exception) {
         // A corrupt file must not take the app down.
         WorkoutData()
+    }
+
+    private fun phasesJson(phases: List<WorkoutPhase>): JSONArray = JSONArray().also { array ->
+        phases.forEach { array.put(JSONObject().put("name", it.name).put("seconds", it.seconds)) }
+    }
+
+    private fun setPlansJson(plans: List<SetPlan>): JSONArray = JSONArray().also { array ->
+        plans.forEach { array.put(JSONObject().put("reps", it.reps).put("weight", it.weightKg)) }
+    }
+
+    private fun partJson(part: ExercisePart): JSONObject = JSONObject()
+        .put("name", part.name)
+        .put("phases", phasesJson(part.phases))
+        .put("set_plans", setPlansJson(part.setPlans))
+
+    private fun readPhases(item: JSONObject): List<WorkoutPhase> {
+        val array = item.optJSONArray("phases") ?: return emptyList()
+        return (0 until array.length()).mapNotNull { j ->
+            val phase = array.optJSONObject(j) ?: return@mapNotNull null
+            WorkoutPhase(phase.optString("name"), phase.optInt("seconds", 1).coerceAtLeast(1))
+        }
+    }
+
+    private fun readPart(item: JSONObject): ExercisePart? {
+        val phases = readPhases(item)
+        if (phases.isEmpty()) return null
+        return ExercisePart(item.optString("name"), phases, readSetPlans(item))
     }
 
     /**
