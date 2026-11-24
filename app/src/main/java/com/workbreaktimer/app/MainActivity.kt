@@ -760,6 +760,26 @@ fun SettingsScreen(
             TimerManager.updateSettings(context) { it.copy(dailyStepGoal = goal) }
         }
 
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(16.dp))
+
+        Text("Тренировки", fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Отсчёт вслух перед подходом: перед первым подходом, перед следующим упражнением " +
+                "суперсета, после кнопки «дальше» и после паузы. 0 начинает подход сразу.",
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(16.dp))
+        IntSettingField(
+            "Отсчёт перед подходом, сек",
+            settings.workoutCountdownSeconds,
+            TimerSettings.WORKOUT_COUNTDOWN_RANGE
+        ) { seconds ->
+            TimerManager.updateSettings(context) { it.copy(workoutCountdownSeconds = seconds) }
+        }
+
         Spacer(Modifier.height(32.dp))
         Button(onClick = onBack) { Text("Назад") }
 

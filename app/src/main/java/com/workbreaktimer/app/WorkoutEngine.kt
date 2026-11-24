@@ -74,8 +74,6 @@ data class WorkoutRunState(
  */
 object WorkoutEngine {
 
-    private const val START_COUNTDOWN = 5
-    private const val RESUME_COUNTDOWN = 3
     private const val BEAT_MILLIS = 1000L
 
     /** Rest seconds announced aloud; the last five work as the countdown to the next set. */
@@ -112,7 +110,7 @@ object WorkoutEngine {
             WorkoutRunState(
                 stage = WorkoutStage.COUNTDOWN,
                 template = template,
-                countdown = START_COUNTDOWN,
+                countdown = countdownSeconds(),
                 reps = template.parts.map { List(rounds) { 0 } },
                 weights = template.parts.map { part -> List(rounds) { part.setPlans[it].weightKg } },
                 startedAtMillis = System.currentTimeMillis()
@@ -148,7 +146,7 @@ object WorkoutEngine {
             nextBeatAt = SystemClock.uptimeMillis() + BEAT_MILLIS
             handler.postAtTime(beatRunnable, nextBeatAt)
         } else {
-            publish(current.copy(stage = WorkoutStage.COUNTDOWN, countdown = RESUME_COUNTDOWN, pausedFrom = null))
+            publish(current.copy(stage = WorkoutStage.COUNTDOWN, countdown = countdownSeconds(), pausedFrom = null))
             voice?.acquireFocus()
             beatNow()
         }
@@ -160,7 +158,7 @@ object WorkoutEngine {
         if (!current.resting) return
         handler.removeCallbacks(beatRunnable)
         voice?.silence()
-        publish(current.copy(stage = WorkoutStage.COUNTDOWN, countdown = RESUME_COUNTDOWN, restLeft = 0, pausedFrom = null))
+        publish(current.copy(stage = WorkoutStage.COUNTDOWN, countdown = countdownSeconds(), restLeft = 0, pausedFrom = null))
         voice?.acquireFocus()
         beatNow()
     }
@@ -171,6 +169,16 @@ object WorkoutEngine {
         // Pushed out of the countdown range, the music comes back up until the countdown starts over.
         if (current.restLeft + seconds > REST_COUNTDOWN) voice?.releaseFocus()
         publish(current.copy(restLeft = current.restLeft + seconds))
+    }
+
+    /**
+     * The countdown before a set, from the settings screen. Read at each use, so a change made
+     * between two sets applies to the next one.
+     */
+    private fun countdownSeconds(): Int {
+        val context = appContext ?: return TimerSettings.DEFAULT_WORKOUT_COUNTDOWN_SECONDS
+        TimerManager.init(context)
+        return TimerManager.state.value.settings.workoutCountdownSeconds
     }
 
     private val WorkoutRunState.resting: Boolean
@@ -373,7 +381,7 @@ object WorkoutEngine {
                 voice?.releaseFocus()
                 publish(next.copy(stage = WorkoutStage.REST, restLeft = seconds, restElapsed = 0))
             }
-            else -> publish(next.copy(stage = WorkoutStage.COUNTDOWN, countdown = RESUME_COUNTDOWN))
+            else -> publish(next.copy(stage = WorkoutStage.COUNTDOWN, countdown = countdownSeconds()))
         }
     }
 

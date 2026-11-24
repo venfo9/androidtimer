@@ -1,5 +1,6 @@
 package com.workbreaktimer.app
 
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -24,16 +25,21 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -233,9 +239,10 @@ fun WorkoutScreen(
         }
 
         Spacer(Modifier.height(24.dp))
+        val countdown = TimerManager.state.collectAsState().value.settings.workoutCountdownSeconds
         Text(
-            "Перед стартом идёт отсчёт 5 секунд. После паузы повторение начинается заново, " +
-                "с отсчёта 3 секунды.",
+            "Перед подходом идёт отсчёт $countdown сек, его длина меняется в настройках таймера. " +
+                "После паузы повторение начинается заново, тоже с отсчёта.",
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1041,7 +1048,7 @@ private fun PauseEditor(
     }
     if (manual) {
         Text(
-            "Пауза идёт без таймера, на экране видно, сколько прошло. Дальше по кнопке и отсчёту 3 секунды.",
+            "Пауза идёт без таймера, на экране видно, сколько прошло. Дальше по кнопке и отсчёту из настроек.",
             fontSize = 13.sp
         )
     } else {
@@ -1182,6 +1189,7 @@ private fun cleanNumber(raw: String, decimal: Boolean): String {
     return out.toString().take(6)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WorkoutHistoryScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -1199,6 +1207,7 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
     val week = remember(sessions) { WorkoutStore.stats(sessions, now - 7 * DAY_MILLIS) }
     val month = remember(sessions) { WorkoutStore.stats(sessions, now - 30 * DAY_MILLIS) }
     val timeFormat = remember { SimpleDateFormat("d MMM, HH:mm", Locale("ru")) }
+    var exportPicker by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -1207,6 +1216,16 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
             .padding(24.dp)
     ) {
         Text("История тренировок", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = { exportPicker = true }, enabled = data.sessions.isNotEmpty()) {
+            Text("Экспорт тренировок")
+        }
+        Text(
+            "Отметьте в календаре первый и последний день, или один день, и отправьте тренировки " +
+                "таблицей, например в чат с Claude.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(Modifier.height(16.dp))
 
         if (data.folders.isNotEmpty()) {
@@ -1269,6 +1288,47 @@ fun WorkoutHistoryScreen(onBack: () -> Unit) {
 
         Spacer(Modifier.height(24.dp))
         Button(onClick = onBack) { Text("Назад") }
+    }
+
+    if (exportPicker) {
+        // Only days with a workout can be tapped; the range starts on the newest one.
+        val days = remember(data.sessions) { WorkoutExport.daysWithWorkouts(data.sessions) }
+        val newest = data.sessions.maxOfOrNull { it.startedAtMillis }
+        val pickerState = rememberDateRangePickerState(
+            initialSelectedStartDateMillis = newest?.let { WorkoutExport.toPickerMillis(WorkoutExport.localDate(it)) },
+            selectableDates = object : SelectableDates {
+                override fun isSelectableDate(utcTimeMillis: Long): Boolean =
+                    WorkoutExport.fromPickerMillis(utcTimeMillis) in days
+            }
+        )
+        DatePickerDialog(
+            onDismissRequest = { exportPicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val start = pickerState.selectedStartDateMillis
+                        if (start != null) {
+                            // A start without an end exports that one day.
+                            val from = WorkoutExport.fromPickerMillis(start)
+                            val to = pickerState.selectedEndDateMillis?.let { WorkoutExport.fromPickerMillis(it) } ?: from
+                            val text = WorkoutExport.report(WorkoutStore.state.value, from, to)
+                            if (!WorkoutExport.share(context, WorkoutExport.title(from, to), text)) {
+                                Toast.makeText(context, "Нет приложения, чтобы отправить текст", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        exportPicker = false
+                    },
+                    enabled = pickerState.selectedStartDateMillis != null
+                ) { Text("Отправить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { exportPicker = false }) { Text("Отмена") }
+            }
+        ) {
+            // The range picker scrolls through months, so it takes the dialog's height
+            // rather than measuring itself unbounded.
+            DateRangePicker(state = pickerState, showModeToggle = false, modifier = Modifier.weight(1f))
+        }
     }
 }
 

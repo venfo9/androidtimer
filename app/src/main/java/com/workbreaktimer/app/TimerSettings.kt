@@ -38,7 +38,12 @@ data class TimerSettings(
     /** Steps the "today" bar on the timer screen fills up to. */
     val dailyStepGoal: Int = DEFAULT_DAILY_STEP_GOAL,
     val timerAlarmStyle: AlarmStyle = AlarmStyle.FULL_SCREEN,
-    val reminderAlarmStyle: AlarmStyle = AlarmStyle.FULL_SCREEN
+    val reminderAlarmStyle: AlarmStyle = AlarmStyle.FULL_SCREEN,
+    /**
+     * Seconds counted aloud before a workout set begins: the first set, the next exercise of a
+     * superset, the set after a rest that waits for a button, and a resumed set.
+     */
+    val workoutCountdownSeconds: Int = DEFAULT_WORKOUT_COUNTDOWN_SECONDS
 ) {
     companion object {
         const val DEFAULT_WORK_MILLIS = 30 * 60_000L
@@ -48,6 +53,8 @@ data class TimerSettings(
         const val DEFAULT_WALK_RESET_STEPS = 100
         const val DEFAULT_WALK_GAP_SECONDS = 30
         const val DEFAULT_DAILY_STEP_GOAL = 10_000
+        const val DEFAULT_WORKOUT_COUNTDOWN_SECONDS = 5
+        val WORKOUT_COUNTDOWN_RANGE = 0..30
 
         /** Below a few seconds the alarm round-trip dominates; above three hours is a typo. */
         const val MIN_DURATION_MILLIS = 5_000L
@@ -80,7 +87,10 @@ class SettingsStore(context: Context) {
         walkGapSeconds = prefs.getInt(KEY_WALK_GAP, TimerSettings.DEFAULT_WALK_GAP_SECONDS),
         dailyStepGoal = prefs.getInt(KEY_STEP_GOAL, TimerSettings.DEFAULT_DAILY_STEP_GOAL),
         timerAlarmStyle = readAlarmStyle(KEY_TIMER_ALARM_STYLE),
-        reminderAlarmStyle = readAlarmStyle(KEY_REMINDER_ALARM_STYLE)
+        reminderAlarmStyle = readAlarmStyle(KEY_REMINDER_ALARM_STYLE),
+        workoutCountdownSeconds = prefs.getInt(
+            KEY_WORKOUT_COUNTDOWN, TimerSettings.DEFAULT_WORKOUT_COUNTDOWN_SECONDS
+        ).coerceIn(TimerSettings.WORKOUT_COUNTDOWN_RANGE)
     )
 
     private fun readAlarmStyle(key: String): AlarmStyle =
@@ -100,6 +110,7 @@ class SettingsStore(context: Context) {
             .putInt(KEY_STEP_GOAL, settings.dailyStepGoal)
             .putString(KEY_TIMER_ALARM_STYLE, settings.timerAlarmStyle.name)
             .putString(KEY_REMINDER_ALARM_STYLE, settings.reminderAlarmStyle.name)
+            .putInt(KEY_WORKOUT_COUNTDOWN, settings.workoutCountdownSeconds)
             .apply()
     }
 
@@ -116,5 +127,6 @@ class SettingsStore(context: Context) {
         const val KEY_STEP_GOAL = "daily_step_goal"
         const val KEY_TIMER_ALARM_STYLE = "timer_alarm_style"
         const val KEY_REMINDER_ALARM_STYLE = "reminder_alarm_style"
+        const val KEY_WORKOUT_COUNTDOWN = "workout_countdown_seconds"
     }
 }
